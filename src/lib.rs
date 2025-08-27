@@ -2,63 +2,58 @@ extern crate duckdb;
 extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
 
+pub(crate) mod ris_whois;
+
 use duckdb::{
-    core::{DataChunkHandle, Inserter, LogicalTypeHandle, LogicalTypeId},
-    vtab::{BindInfo, InitInfo, TableFunctionInfo, VTab},
-    Connection, Result,
+    arrow::{self, array::Array, datatypes::DataType}, vscalar::VArrowScalar, Connection, Result
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use libduckdb_sys as ffi;
 use std::{
-    error::Error,
-    ffi::CString,
-    sync::atomic::{AtomicBool, Ordering},
+    error::Error, sync::Arc,
 };
 
-#[repr(C)]
-struct HelloBindData {
-    name: String,
+#[derive(Default)]
+struct FirstLessSpecificState {
+
 }
 
-#[repr(C)]
-struct HelloInitData {
-    done: AtomicBool,
-}
 
-struct HelloVTab;
+struct FirstLessSpecific;
 
-impl VTab for HelloVTab {
-    type InitData = HelloInitData;
-    type BindData = HelloBindData;
 
-    fn bind(bind: &BindInfo) -> Result<Self::BindData, Box<dyn std::error::Error>> {
-        bind.add_result_column("column0", LogicalTypeHandle::from(LogicalTypeId::Varchar));
-        let name = bind.get_parameter(0).to_string();
-        Ok(HelloBindData { name })
-    }
+impl VArrowScalar for FirstLessSpecific {
+    type State = FirstLessSpecificState;
 
-    fn init(_: &InitInfo) -> Result<Self::InitData, Box<dyn std::error::Error>> {
-        Ok(HelloInitData {
-            done: AtomicBool::new(false),
-        })
-    }
+    fn invoke(info: &Self::State, input: duckdb::arrow::array::RecordBatch) -> std::result::Result<std::sync::Arc<dyn duckdb::arrow::array::Array>, Box<dyn std::error::Error>> {
+        let len = input.num_rows();
 
-    fn func(func: &TableFunctionInfo<Self>, output: &mut DataChunkHandle) -> Result<(), Box<dyn std::error::Error>> {
-        let init_data = func.get_init_data();
-        let bind_data = func.get_bind_data();
-        if init_data.done.swap(true, Ordering::Relaxed) {
-            output.set_len(0);
-        } else {
-            let vector = output.flat_vector(0);
-            let result = CString::new(format!("Rusty Quack {} 🐥", bind_data.name))?;
-            vector.insert(0, result);
-            output.set_len(1);
+        println!("ArrowFunc invoked with {} rows - pass", len);
+
+        let name_array = input
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .unwrap();
+
+        let mut results = Vec::with_capacity(len);
+        for i in 0..len {
+            if name_array.is_valid(i) {
+                let name = name_array.value(i);
+                let result = format!("Hello, {}!", name);
+                results.push(Some(result));
+            } else {
+                results.push(None);
+            }
         }
-        Ok(())
+
+        Ok(Arc::new(arrow::array::StringArray::from(results)))
     }
 
-    fn parameters() -> Option<Vec<LogicalTypeHandle>> {
-        Some(vec![LogicalTypeHandle::from(LogicalTypeId::Varchar)])
+    fn signatures() -> Vec<duckdb::vscalar::ArrowFunctionSignature> {
+        vec![duckdb::vscalar::ArrowFunctionSignature::exact(
+            vec![arrow::datatypes::DataType::Utf8], DataType::Utf8
+        )]
     }
 }
 
@@ -66,7 +61,6 @@ const EXTENSION_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[duckdb_entrypoint_c_api()]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
-    con.register_table_function::<HelloVTab>(EXTENSION_NAME)
-        .expect("Failed to register hello table function");
+    con.register_scalar_function::<FirstLessSpecific>(EXTENSION_NAME).expect("Failed to register function");
     Ok(())
 }

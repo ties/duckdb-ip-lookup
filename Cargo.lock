@@ -1613,6 +1613,7 @@ dependencies = [
  "planus",
  "polars",
  "reqwest",
+ "tokio",
  "tracing",
  "tracing-subscriber",
 ]

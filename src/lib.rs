@@ -8,13 +8,15 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter};
 
 use duckdb::{
-    arrow::{self, array::Array, datatypes::DataType}, vscalar::VArrowScalar, Connection, Result
+    arrow::{self, array::Array, datatypes::DataType},
+    vscalar::VArrowScalar,
+    Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
-use libduckdb_sys as ffi;
-use std::sync::{LazyLock, Arc};
-use std::{env, error::Error, net::IpAddr};
 use ipnet::IpNet;
+use libduckdb_sys as ffi;
+use std::sync::{Arc, LazyLock};
+use std::{env, error::Error, net::IpAddr};
 
 mod lib {
     pub mod ris_whois;
@@ -31,13 +33,18 @@ static IP_TRIE: LazyLock<IpnetTrie<()>> = LazyLock::new(|| {
 #[derive(Default)]
 struct FirstLessSpecificState;
 
-
 struct FirstLessSpecific;
 
 impl VArrowScalar for FirstLessSpecific {
     type State = FirstLessSpecificState;
 
-    fn invoke(_info: &Self::State, input: duckdb::arrow::array::RecordBatch) -> std::result::Result<std::sync::Arc<dyn duckdb::arrow::array::Array>, Box<dyn std::error::Error>> {
+    fn invoke(
+        _info: &Self::State,
+        input: duckdb::arrow::array::RecordBatch,
+    ) -> std::result::Result<
+        std::sync::Arc<dyn duckdb::arrow::array::Array>,
+        Box<dyn std::error::Error>,
+    > {
         let len = input.num_rows();
 
         let ip_array = input
@@ -46,39 +53,55 @@ impl VArrowScalar for FirstLessSpecific {
             .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
-        let mut results: Vec<Option<String>> = Vec::with_capacity(len);
+        let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
+
+        let mut last_value: Option<(String, Option<String>)> = None;
         for i in 0..len {
             if ip_array.is_valid(i) {
                 let ip_str = ip_array.value(i);
-                
+
+                match &last_value {
+                    Some((last_ip_str, last_result)) if last_ip_str == ip_str => {
+                        builder.append_option(last_result.clone());
+                        continue;
+                    }
+                    _ => {}
+                }
+
                 // Parse the input as either an IP network (with CIDR) or IP address
                 let ipnet = match ip_str {
                     s if s.contains('/') => s.parse::<IpNet>().ok(),
                     s => s.parse::<IpAddr>().ok().map(IpNet::from),
                 };
-                
+
                 let result = match ipnet {
                     Some(net) => {
                         // Find the longest matching prefix in the trie
-                        match IP_TRIE.longest_match(&net) {
-                            Some((matched_net, _)) => Some(format!("{}", matched_net)),
-                            None => None,
-                        }
+                        IP_TRIE
+                            .longest_match(&net)
+                            .map(|(matched_net, _)| format!("{}", matched_net))
                     }
                     None => None,
                 };
-                results.push(result);
+
+                match result {
+                    Some(ref r) => builder.append_value(r),
+                    None => builder.append_null(),
+                }
+
+                last_value = Some((ip_str.to_string(), result));
             } else {
-                results.push(None);
+                builder.append_null();
             }
         }
 
-        Ok(Arc::new(arrow::array::StringArray::from(results)))
+        Ok(Arc::new(builder.finish()))
     }
 
     fn signatures() -> Vec<duckdb::vscalar::ArrowFunctionSignature> {
         vec![duckdb::vscalar::ArrowFunctionSignature::exact(
-            vec![arrow::datatypes::DataType::Utf8], DataType::Utf8
+            vec![arrow::datatypes::DataType::Utf8],
+            DataType::Utf8,
         )]
     }
 }
@@ -105,13 +128,15 @@ fn init_tracing() {
         .try_init();
 }
 
-const EXTENSION_NAME: &str = env!("CARGO_PKG_NAME");
-
+/// # Safety
+/// This function is called by DuckDB when the extension is loaded.
+/// It registers the scalar function with DuckDB.
 #[duckdb_entrypoint_c_api()]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
     // Initialize tracing with DuckDB log level
     init_tracing();
 
-    con.register_scalar_function::<FirstLessSpecific>(EXTENSION_NAME).expect("Failed to register function");
+    con.register_scalar_function::<FirstLessSpecific>("riswhois_longest_prefix")
+        .expect("Failed to register function");
     Ok(())
 }

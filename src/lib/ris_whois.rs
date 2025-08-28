@@ -1,15 +1,11 @@
 use ipnet::IpNet;
 use ipnet_trie::IpnetTrie;
-use itertools::izip;
 use polars::prelude::*;
 use reqwest::Client;
-use std::{
-    io::Cursor,
-};
+use std::io::Cursor;
 
 const RISWHOIS_V4_URL: &str = "https://www.ris.ripe.net/dumps/riswhoisdump.IPv4.gz";
 const RISWHOIS_V6_URL: &str = "https://www.ris.ripe.net/dumps/riswhoisdump.IPv6.gz";
-
 
 fn parse_riswhois_file(data: &[u8]) -> Result<DataFrame, PolarsError> {
     let cursor = Cursor::new(data);
@@ -30,34 +26,35 @@ fn parse_riswhois_file(data: &[u8]) -> Result<DataFrame, PolarsError> {
         .finish()
 }
 
-async fn download_and_parse(url: &str, name: &str) -> Result<DataFrame, Box<dyn std::error::Error>> {
+async fn download_and_parse(
+    url: &str,
+    name: &str,
+) -> Result<DataFrame, Box<dyn std::error::Error>> {
     let client = Client::new();
     let data = client.get(url).send().await?.bytes().await?;
     println!("Downloaded {} dump, size: {} bytes", name, data.len());
-    
+
     let df = parse_riswhois_file(&data)?;
     println!("Parsed {} dump, {} rows", name, df.height());
-    
+
     Ok(df)
 }
 
-fn build_trie_from_dataframes(dfs: Vec<DataFrame>) -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
+fn build_trie_from_dataframes(
+    dfs: Vec<DataFrame>,
+) -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
     let mut table: IpnetTrie<()> = IpnetTrie::new();
-    let mut total_entries = 0;
-    
     for df in dfs {
         let objects = df.take_columns();
         let prefixes = objects[1].str()?.iter();
-        
-        for prefix in prefixes {
-            if let Some(prefix) = prefix {
-                if let Ok(ip_net) = prefix.parse::<IpNet>() {
-                    table.insert(ip_net, ());
-                }
+
+        for prefix in prefixes.flatten() {
+            if let Ok(ip_net) = prefix.parse::<IpNet>() {
+                table.insert(ip_net, ());
             }
         }
     }
-    
+
     Ok(table)
 }
 
@@ -65,16 +62,16 @@ pub fn build_ipnet_trie() -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
     // Use tokio's block_on to run async code in sync context
     tokio::runtime::Runtime::new()?.block_on(async {
         log::info!("Starting download of IPv4 and IPv6 RIS-Whois dumps...");
-        
+
         // Download and parse both dumps in parallel
         let (ipv4_result, ipv6_result) = tokio::join!(
             download_and_parse(RISWHOIS_V4_URL, "IPv4"),
             download_and_parse(RISWHOIS_V6_URL, "IPv6")
         );
-        
+
         // Collect successful results
         let mut dataframes = Vec::new();
-        
+
         match ipv4_result {
             Ok(df) => dataframes.push(df),
             Err(e) => {
@@ -82,7 +79,7 @@ pub fn build_ipnet_trie() -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
                 return Err(e);
             }
         }
-        
+
         match ipv6_result {
             Ok(df) => dataframes.push(df),
             Err(e) => {
@@ -90,11 +87,11 @@ pub fn build_ipnet_trie() -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
                 return Err(e);
             }
         }
-        
+
         if dataframes.is_empty() {
             return Err("Failed to download any RIS-Whois data".into());
         }
-        
+
         // Build combined trie from all dataframes
         build_trie_from_dataframes(dataframes)
     })

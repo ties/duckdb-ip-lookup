@@ -1,12 +1,12 @@
 use ipnet::{IpNet, Ipv4Net, Ipv6Net};
 use ipnet_trie::IpnetTrie;
-use itertools::multizip;
 use polars::prelude::*;
 use reqwest::blocking::Client;
 use std::{
     io::Cursor,
-    net::{Ipv4Addr, Ipv6Addr},
 };
+
+const RISWHOIS_URL: &str = "https://www.ris.ripe.net/dumps/riswhoisdump.IPv4.gz";
 
 fn parse_riswhois_file(data: &[u8]) -> Result<DataFrame, PolarsError> {
     let cursor = Cursor::new(data);
@@ -27,7 +27,7 @@ fn parse_riswhois_file(data: &[u8]) -> Result<DataFrame, PolarsError> {
         .finish()
 }
 
-fn build_ipnet_trie() -> Result<IpnetTrie<Origin>, Box<dyn std::error::Error>> {
+fn build_ipnet_trie() -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
     let data = Client::new().get(RISWHOIS_URL).send()?.bytes()?;
     log::info!("Data loaded, size: {} bytes", data.len());
 
@@ -53,7 +53,6 @@ fn build_ipnet_trie() -> Result<IpnetTrie<Origin>, Box<dyn std::error::Error>> {
             }
         }
     }
-    log::info!("Memory usage: {}b", get_memory_usage());
 
     Ok(table)
 }

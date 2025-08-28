@@ -2,7 +2,9 @@ extern crate duckdb;
 extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
 
-pub(crate) mod ris_whois;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{fmt, EnvFilter};
 
 use duckdb::{
     arrow::{self, array::Array, datatypes::DataType}, vscalar::VArrowScalar, Connection, Result
@@ -10,7 +12,7 @@ use duckdb::{
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use libduckdb_sys as ffi;
 use std::{
-    error::Error, sync::Arc,
+    env, error::Error, sync::Arc
 };
 
 #[derive(Default)]
@@ -20,7 +22,6 @@ struct FirstLessSpecificState {
 
 
 struct FirstLessSpecific;
-
 
 impl VArrowScalar for FirstLessSpecific {
     type State = FirstLessSpecificState;
@@ -57,10 +58,35 @@ impl VArrowScalar for FirstLessSpecific {
     }
 }
 
+/// Initialize tracing subscriber with log level based on DUCKDB_LOG_LEVEL environment variable
+fn init_tracing() {
+    // Map DuckDB log levels to tracing levels
+    let log_level = match env::var("DUCKDB_LOG_LEVEL").as_deref() {
+        Ok("ERROR") => "error",
+        Ok("WARN") => "warn",
+        Ok("INFO") => "info",
+        Ok("DEBUG") => "debug",
+        Ok("TRACE") => "trace",
+        _ => "info", // Default to info if not set or unrecognized
+    };
+
+    // Create env filter with the determined log level for this crate
+    let filter = EnvFilter::new(format!("{}={}", env!("CARGO_PKG_NAME"), log_level));
+
+    // Initialize subscriber only if not already initialized
+    let _ = tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(filter)
+        .try_init();
+}
+
 const EXTENSION_NAME: &str = env!("CARGO_PKG_NAME");
 
 #[duckdb_entrypoint_c_api()]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
+    // Initialize tracing with DuckDB log level
+    init_tracing();
+
     con.register_scalar_function::<FirstLessSpecific>(EXTENSION_NAME).expect("Failed to register function");
     Ok(())
 }

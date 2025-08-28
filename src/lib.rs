@@ -2,6 +2,7 @@ extern crate duckdb;
 extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
 
+use ipnet_trie::IpnetTrie;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -11,14 +12,24 @@ use duckdb::{
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use libduckdb_sys as ffi;
-use std::{
-    env, error::Error, sync::Arc
-};
+use std::sync::{LazyLock, Arc};
+use std::{env, error::Error, net::IpAddr};
+use ipnet::IpNet;
+
+mod lib {
+    pub mod ris_whois;
+}
+use crate::lib::ris_whois::build_ipnet_trie;
+
+static IP_TRIE: LazyLock<IpnetTrie<()>> = LazyLock::new(|| {
+    build_ipnet_trie().unwrap_or_else(|e| {
+        eprintln!("Failed to build IP trie: {}", e);
+        IpnetTrie::new()
+    })
+});
 
 #[derive(Default)]
-struct FirstLessSpecificState {
-
-}
+struct FirstLessSpecificState;
 
 
 struct FirstLessSpecific;
@@ -26,23 +37,37 @@ struct FirstLessSpecific;
 impl VArrowScalar for FirstLessSpecific {
     type State = FirstLessSpecificState;
 
-    fn invoke(info: &Self::State, input: duckdb::arrow::array::RecordBatch) -> std::result::Result<std::sync::Arc<dyn duckdb::arrow::array::Array>, Box<dyn std::error::Error>> {
+    fn invoke(_info: &Self::State, input: duckdb::arrow::array::RecordBatch) -> std::result::Result<std::sync::Arc<dyn duckdb::arrow::array::Array>, Box<dyn std::error::Error>> {
         let len = input.num_rows();
 
-        println!("ArrowFunc invoked with {} rows - pass", len);
-
-        let name_array = input
+        let ip_array = input
             .column(0)
             .as_any()
             .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
-        let mut results = Vec::with_capacity(len);
+        let mut results: Vec<Option<String>> = Vec::with_capacity(len);
         for i in 0..len {
-            if name_array.is_valid(i) {
-                let name = name_array.value(i);
-                let result = format!("Hello, {}!", name);
-                results.push(Some(result));
+            if ip_array.is_valid(i) {
+                let ip_str = ip_array.value(i);
+                
+                // Parse the input as either an IP network (with CIDR) or IP address
+                let ipnet = match ip_str {
+                    s if s.contains('/') => s.parse::<IpNet>().ok(),
+                    s => s.parse::<IpAddr>().ok().map(IpNet::from),
+                };
+                
+                let result = match ipnet {
+                    Some(net) => {
+                        // Find the longest matching prefix in the trie
+                        match IP_TRIE.longest_match(&net) {
+                            Some((matched_net, _)) => Some(format!("{}", matched_net)),
+                            None => None,
+                        }
+                    }
+                    None => None,
+                };
+                results.push(result);
             } else {
                 results.push(None);
             }

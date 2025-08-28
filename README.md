@@ -24,6 +24,7 @@ D select riswhois_longest_prefix('1.1.1.1');
 
 ## Changelog
 
+  * Criterion benchmarking harness for core lookup code.
   * Removed heavy (polars) dependencies, dropping file size significantly.
   * Added a cache for frequently seen items
     * before LRU/s3-fifo: ~221 cpu-seconds for 1.456.072.651 rows

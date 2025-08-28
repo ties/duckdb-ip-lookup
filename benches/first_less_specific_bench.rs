@@ -8,8 +8,10 @@ use arrow::{
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use rand::distributions::Distribution;
 use rand::rngs::StdRng;
 use rand::{seq::SliceRandom, SeedableRng};
+use rand_distr::Zipf;
 
 // Import the necessary types from the main library
 use duckdb::vscalar::VArrowScalar;
@@ -101,7 +103,54 @@ fn benchmark_first_less_specific(c: &mut Criterion) {
         })
     });
 
+    // Zipf-distributed sample benchmark (1M elements)
+    let zipf_samples = create_zipf_sample(string_array, 1_000_000, 1.5, 42);
+    let zipf_batches = create_chunks(&zipf_samples, CHUNK_SIZE);
+
+    group.bench_function("zipf_distributed_1m_openintel_radar_data", |b| {
+        b.iter(|| {
+            for batch in &zipf_batches {
+                let _result = black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
+            }
+        })
+    });
+
     group.finish();
+}
+
+fn create_zipf_sample(
+    string_array: &StringArray,
+    sample_size: usize,
+    exponent: f64,
+    seed: u64,
+) -> RecordBatch {
+    let mut rng = StdRng::seed_from_u64(seed);
+    let n = string_array.len();
+
+    // Create Zipf distribution
+    let zipf = Zipf::new(n as u64, exponent).unwrap();
+
+    // Generate Zipf-distributed indices
+    let mut zipf_indices = Vec::with_capacity(sample_size);
+    for _ in 0..sample_size {
+        // zipf.sample() returns 1-based index, convert to 0-based
+        let index = (zipf.sample(&mut rng) as u64 - 1) as u32;
+        zipf_indices.push(index);
+    }
+
+    // Create array from Zipf-distributed indices
+    let indices_array = UInt32Array::from(zipf_indices);
+    let zipf_array = arrow::compute::take(string_array, &indices_array, None).unwrap();
+
+    // Create record batch
+    let schema = string_array.data_type().clone();
+    RecordBatch::try_new(
+        Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("ip", schema, false),
+        ])),
+        vec![zipf_array],
+    )
+    .unwrap()
 }
 
 fn create_chunks(batch: &RecordBatch, chunk_size: usize) -> Vec<RecordBatch> {

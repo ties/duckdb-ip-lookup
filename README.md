@@ -24,8 +24,19 @@ D select riswhois_longest_prefix('1.1.1.1');
 
 ## Changelog
 
+  * Evaluated usage of s3-fifo: performance was lower _with_ s3fifo for all fifo sizes (16/128/1024) after storing String.
+    * Performance degradation between ~27-34% with s3fifo compared to baseline [0].
+  * Stored `String` values in trie.
   * Criterion benchmarking harness for core lookup code.
   * Removed heavy (polars) dependencies, dropping file size significantly.
   * Added a cache for frequently seen items
     * before LRU/s3-fifo: ~221 cpu-seconds for 1.456.072.651 rows
     * after: s3-fifo@128: ~190 cpu-seconds for 1.456.072.651 rows
+
+[0]: Data on the OpenIntel Radar dataset on a AMD Ryzen 7205P:
+
+| Benchmark | Mean Time | Change |
+|-----------|-----------|--------|
+| original order | 864.80 ms | +28.805% |
+| random order | 893.81 ms | +27.066% |
+| alphabetical order | 710.77 ms | +33.986% |

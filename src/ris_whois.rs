@@ -84,13 +84,13 @@ async fn download_and_parse(
 
 fn build_trie_from_prefixes(
     prefixes: impl Iterator<Item = String>,
-) -> Result<LookupTrie<()>, Box<dyn std::error::Error>> {
-    let mut table: IpnetTrie<()> = IpnetTrie::new();
+) -> Result<LookupTrie<String>, Box<dyn std::error::Error>> {
+    let mut table = IpnetTrie::new();
     let t0 = std::time::Instant::now();
 
     for prefix in prefixes {
         if let Ok(ip_net) = prefix.parse::<IpNet>() {
-            table.insert(ip_net, ());
+            table.insert(ip_net, prefix);
         }
     }
 
@@ -104,7 +104,7 @@ fn build_trie_from_prefixes(
     Ok(LookupTrie::new(table))
 }
 
-pub fn build_ipnet_trie() -> Result<LookupTrie<()>, Box<dyn std::error::Error>> {
+pub fn build_ipnet_trie() -> Result<LookupTrie<String>, Box<dyn std::error::Error>> {
     // Use tokio's block_on to run async code in sync context
     tokio::runtime::Runtime::new()?.block_on(async {
         log::info!("Starting download of IPv4 and IPv6 RIS-Whois dumps.");

@@ -5,6 +5,7 @@ extern crate libduckdb_sys;
 use duckdb::ffi;
 
 use env_logger::Env;
+#[cfg(feature = "s3fifo")]
 use s3_fifo::{S3FIFOKey, S3FIFO};
 
 use duckdb::{
@@ -52,6 +53,7 @@ impl VArrowScalar for FirstLessSpecific {
             .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
+        #[cfg(feature = "s3fifo")]
         let mut cache: S3FIFO<S3FIFOKey<Option<&str>>, Option<String>> = S3FIFO::new(128);
 
         // 13.48 as average length on a testset
@@ -60,14 +62,17 @@ impl VArrowScalar for FirstLessSpecific {
         for i in ip_array {
             match i {
                 Some(ip_str) => {
-                    let key = S3FIFOKey::new(&i);
+                    #[cfg(feature = "s3fifo")]
+                    {
+                        let key = S3FIFOKey::new(&i);
 
-                    if let Some(cached) = cache.get(&key) {
-                        match &cached {
-                            Some(ref pfx) => builder.append_value(pfx),
-                            None => builder.append_null(),
+                        if let Some(cached) = cache.get(&key) {
+                            match &cached {
+                                Some(ref pfx) => builder.append_value(pfx),
+                                None => builder.append_null(),
+                            }
+                            continue;
                         }
-                        continue;
                     }
 
                     let res = info
@@ -80,7 +85,12 @@ impl VArrowScalar for FirstLessSpecific {
                         Some(ref pfx) => builder.append_value(pfx),
                         None => builder.append_null(),
                     }
-                    cache.put(key, res);
+
+                    #[cfg(feature = "s3fifo")]
+                    {
+                        let key = S3FIFOKey::new(&i);
+                        cache.put(key, res);
+                    }
                 }
                 None => builder.append_null(),
             }

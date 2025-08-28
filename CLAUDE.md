@@ -54,6 +54,15 @@ Run Rust unit tests:
 cargo test
 ```
 
+## Benchmarks
+
+Run performance benchmarks:
+```bash
+cargo bench
+```
+
+**IMPORTANT**: When modifying benchmark code in `benches/`, always run `cargo bench` to verify the benchmarks still work correctly.
+
 ## Extension Loading
 
 Start DuckDB with unsigned extensions enabled:

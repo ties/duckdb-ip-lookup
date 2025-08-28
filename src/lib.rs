@@ -2,7 +2,8 @@ extern crate duckdb;
 extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
 
-use ipnet_trie::IpnetTrie;
+use duckdb::ffi;
+
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -13,26 +14,22 @@ use duckdb::{
     Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
-use ipnet::IpNet;
-use libduckdb_sys as ffi;
 use std::sync::Arc;
-use std::{env, error::Error, net::IpAddr};
+use std::{env, error::Error};
 
 mod lib {
     pub mod ris_whois;
 }
-use crate::lib::ris_whois::build_ipnet_trie;
+use crate::lib::ris_whois::{build_ipnet_trie, LookupTrie};
 
 struct FirstLessSpecificState {
-    trie: IpnetTrie<()>,
+    trie: LookupTrie<()>,
 }
 
 impl Default for FirstLessSpecificState {
     fn default() -> Self {
-        let trie = build_ipnet_trie().unwrap_or_else(|e| {
-            eprintln!("Failed to build IP trie: {}", e);
-            IpnetTrie::new()
-        });
+        // There is no recovery if building the trie fails.
+        let trie = build_ipnet_trie().unwrap();
         FirstLessSpecificState { trie }
     }
 }
@@ -60,43 +57,18 @@ impl VArrowScalar for FirstLessSpecific {
         // 13.48 as average length on a testset
         let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
 
-        let mut last_value: Option<(&str, Option<String>)> = None;
-
         for i in ip_array {
-            if let Some(ip_str) = i {
-                // 3811s (total) before this optimization on big testset.
-                match last_value {
-                    Some((last_ip_str, ref last_result)) if last_ip_str == ip_str => {
-                        builder.append_option(last_result.clone());
-                        continue;
-                    }
-                    _ => {}
+            match i {
+                Some(ip_str) => {
+                    let res = info
+                        .trie
+                        .lookup(ip_str)
+                        .map(|r| r.0)
+                        .map(|ipnet| ipnet.to_string());
+
+                    builder.append_option(res);
                 }
-
-                // Parse the input as either an IP network (with CIDR) or IP address
-                let ipnet = match ip_str {
-                    s if s.contains('/') => s.parse::<IpNet>().ok(),
-                    s => s.parse::<IpAddr>().ok().map(IpNet::from),
-                };
-
-                let result = match ipnet {
-                    Some(net) => {
-                        // Find the longest matching prefix in the trie
-                        info.trie
-                            .longest_match(&net)
-                            .map(|(matched_net, _)| format!("{}", matched_net))
-                    }
-                    None => None,
-                };
-
-                match result {
-                    Some(ref r) => builder.append_value(r),
-                    None => builder.append_null(),
-                }
-
-                last_value = Some((ip_str, result));
-            } else {
-                builder.append_null();
+                None => builder.append_null(),
             }
         }
 

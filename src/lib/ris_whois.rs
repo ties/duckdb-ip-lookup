@@ -2,10 +2,36 @@ use ipnet::IpNet;
 use ipnet_trie::IpnetTrie;
 use polars::prelude::*;
 use reqwest::Client;
-use std::io::Cursor;
+use std::{io::Cursor, net::IpAddr};
 
 const RISWHOIS_V4_URL: &str = "https://www.ris.ripe.net/dumps/riswhoisdump.IPv4.gz";
 const RISWHOIS_V6_URL: &str = "https://www.ris.ripe.net/dumps/riswhoisdump.IPv6.gz";
+
+pub(crate) struct LookupTrie<T> {
+    trie: IpnetTrie<T>,
+}
+
+impl<T> LookupTrie<T> {
+    fn new(trie: IpnetTrie<T>) -> Self {
+        LookupTrie { trie }
+    }
+
+    pub(crate) fn lookup(&self, ip_or_pfx: &str) -> Option<(IpNet, &T)> {
+        // Parse the input as either an IP network (with CIDR) or IP address
+        let ipnet = match ip_or_pfx {
+            s if s.contains('/') => s.parse::<IpNet>().ok(),
+            s => s.parse::<IpAddr>().ok().map(IpNet::from),
+        };
+
+        match ipnet {
+            Some(net) => {
+                // Find the longest matching prefix in the trie
+                self.trie.longest_match(&net)
+            }
+            None => None,
+        }
+    }
+}
 
 fn parse_riswhois_file(data: &[u8]) -> Result<DataFrame, PolarsError> {
     let cursor = Cursor::new(data);
@@ -47,7 +73,7 @@ async fn download_and_parse(
 
 fn build_trie_from_dataframes(
     dfs: Vec<DataFrame>,
-) -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
+) -> Result<LookupTrie<()>, Box<dyn std::error::Error>> {
     let mut table: IpnetTrie<()> = IpnetTrie::new();
     let t0 = std::time::Instant::now();
     for df in dfs {
@@ -68,10 +94,10 @@ fn build_trie_from_dataframes(
         t0.elapsed().as_secs_f64()
     );
 
-    Ok(table)
+    Ok(LookupTrie::new(table))
 }
 
-pub fn build_ipnet_trie() -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
+pub fn build_ipnet_trie() -> Result<LookupTrie<()>, Box<dyn std::error::Error>> {
     // Use tokio's block_on to run async code in sync context
     tokio::runtime::Runtime::new()?.block_on(async {
         log::info!("Starting download of IPv4 and IPv6 RIS-Whois dumps.");

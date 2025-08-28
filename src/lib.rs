@@ -4,6 +4,7 @@ extern crate libduckdb_sys;
 
 use duckdb::ffi;
 
+use s3_fifo::{S3FIFOKey, S3FIFO};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter};
@@ -17,10 +18,8 @@ use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use std::sync::Arc;
 use std::{env, error::Error};
 
-mod lib {
-    pub mod ris_whois;
-}
-use crate::lib::ris_whois::{build_ipnet_trie, LookupTrie};
+mod ris_whois;
+use crate::ris_whois::{build_ipnet_trie, LookupTrie};
 
 struct FirstLessSpecificState {
     trie: LookupTrie<()>,
@@ -54,19 +53,35 @@ impl VArrowScalar for FirstLessSpecific {
             .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
+        let mut cache: S3FIFO<S3FIFOKey<Option<&str>>, Option<String>> = S3FIFO::new(128);
+
         // 13.48 as average length on a testset
         let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
 
         for i in ip_array {
             match i {
                 Some(ip_str) => {
+                    let key = S3FIFOKey::new(&i);
+
+                    if let Some(cached) = cache.get(&key) {
+                        match &cached {
+                            Some(ref pfx) => builder.append_value(pfx),
+                            None => builder.append_null(),
+                        }
+                        continue;
+                    }
+
                     let res = info
                         .trie
                         .lookup(ip_str)
                         .map(|r| r.0)
                         .map(|ipnet| ipnet.to_string());
 
-                    builder.append_option(res);
+                    match &res {
+                        Some(ref pfx) => builder.append_value(pfx),
+                        None => builder.append_null(),
+                    }
+                    cache.put(key, res);
                 }
                 None => builder.append_null(),
             }

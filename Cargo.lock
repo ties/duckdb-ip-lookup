@@ -1613,6 +1613,7 @@ dependencies = [
  "planus",
  "polars",
  "reqwest",
+ "s3-fifo",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -3359,6 +3360,12 @@ name = "ryu"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3cb5ba0dc43242ce17de99c180e96db90b235b8a9fdc9543c96d2209116bd9f"
+
+[[package]]
+name = "s3-fifo"
+version = "0.1.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "96139a1fabe3957890fa0ebd55daefc320e796086cd5b8bd73d2b54153f49147"
 
 [[package]]
 name = "same-file"

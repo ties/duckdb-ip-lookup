@@ -1,12 +1,12 @@
-# name: test/sql/rusty_quack.test
+# name: test/sql/ip_more_less_specific.test
 # description: test rusty_quack extension
 # group: [quack]
 
 # Before we load the extension, this will fail
 statement error
-SELECT rusty_quack('Sam');
+SELECT riswhois_longest_prefix('240.0.0.0/4');
 ----
-Catalog Error: Scalar Function with name rusty_quack does not exist!
+Catalog Error: Scalar Function with name riswhois_longest_prefix does not exist!
 
 # Require statement will ensure the extension is loaded from now on
 require ip_more_less_specific
@@ -15,6 +15,6 @@ require icu
 
 # Confirm the extension works
 query I
-SELECT * from rusty_quack('Sam');
+SELECT * from riswhois_longest_prefix('193.0.0.2');
 ----
 Rusty Quack Sam 🐥

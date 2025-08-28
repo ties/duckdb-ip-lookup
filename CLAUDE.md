@@ -49,6 +49,11 @@ Run Clippy linter:
 cargo clippy
 ```
 
+Run Rust unit tests:
+```bash
+cargo test
+```
+
 ## Extension Loading
 
 Start DuckDB with unsigned extensions enabled:

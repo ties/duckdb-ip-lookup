@@ -16,10 +16,11 @@ use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use std::sync::Arc;
 use std::{env, error::Error};
 
+#[path = "ris_whois.rs"]
 mod ris_whois;
-use crate::ris_whois::{build_ipnet_trie, LookupTrie};
+use ris_whois::{build_ipnet_trie, LookupTrie};
 
-struct FirstLessSpecificState {
+pub struct FirstLessSpecificState {
     trie: LookupTrie<()>,
 }
 
@@ -31,7 +32,7 @@ impl Default for FirstLessSpecificState {
     }
 }
 
-struct FirstLessSpecific;
+pub struct FirstLessSpecific;
 
 impl VArrowScalar for FirstLessSpecific {
     type State = FirstLessSpecificState;

@@ -4,10 +4,8 @@ extern crate libduckdb_sys;
 
 use duckdb::ffi;
 
+use env_logger::Env;
 use s3_fifo::{S3FIFOKey, S3FIFO};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
 
 use duckdb::{
     arrow::{self, array::Array, datatypes::DataType},
@@ -98,9 +96,9 @@ impl VArrowScalar for FirstLessSpecific {
     }
 }
 
-/// Initialize tracing subscriber with log level based on DUCKDB_LOG_LEVEL environment variable
-fn init_tracing() {
-    // Map DuckDB log levels to tracing levels
+/// Initialize env_logger with log level based on DUCKDB_LOG_LEVEL environment variable
+fn init_logging() {
+    // Map DuckDB log levels to env_logger levels
     let log_level = match env::var("DUCKDB_LOG_LEVEL").as_deref() {
         Ok("ERROR") => "error",
         Ok("WARN") => "warn",
@@ -110,14 +108,13 @@ fn init_tracing() {
         _ => "info", // Default to info if not set or unrecognized
     };
 
-    // Create env filter with the determined log level for this crate
-    let filter = EnvFilter::new(format!("{}={}", env!("CARGO_PKG_NAME"), log_level));
-
-    // Initialize subscriber only if not already initialized
-    let _ = tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(filter)
-        .try_init();
+    // Initialize env_logger with the determined log level
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or(format!(
+        "{}={}",
+        env!("CARGO_PKG_NAME"),
+        log_level
+    )))
+    .try_init();
 }
 
 /// # Safety
@@ -125,8 +122,8 @@ fn init_tracing() {
 /// It registers the scalar function with DuckDB.
 #[duckdb_entrypoint_c_api()]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
-    // Initialize tracing with DuckDB log level
-    init_tracing();
+    // Initialize logging with DuckDB log level
+    init_logging();
 
     con.register_scalar_function::<FirstLessSpecific>("riswhois_longest_prefix")
         .expect("Failed to register function");

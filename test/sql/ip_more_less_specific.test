@@ -1,6 +1,7 @@
 # name: test/sql/ip_more_less_specific.test
-# description: test rusty_quack extension
-# group: [quack]
+# name: test/sql/ip_more_less_specific.test
+# description: test ip more/less specific extension
+# group: [ip]
 
 # Before we load the extension, this will fail
 statement error
@@ -15,6 +16,6 @@ require icu
 
 # Confirm the extension works
 query I
-SELECT * from riswhois_longest_prefix('193.0.0.2');
+SELECT riswhois_longest_prefix('8.8.8.8');
 ----
-Rusty Quack Sam 🐥
+8.8.8.0/24

@@ -1,8 +1,11 @@
+use flate2::read::GzDecoder;
 use ipnet::IpNet;
 use ipnet_trie::IpnetTrie;
-use polars::prelude::*;
 use reqwest::Client;
-use std::{io::Cursor, net::IpAddr};
+use std::{
+    io::{BufRead, BufReader, Cursor},
+    net::IpAddr,
+};
 
 const RISWHOIS_V4_URL: &str = "https://www.ris.ripe.net/dumps/riswhoisdump.IPv4.gz";
 const RISWHOIS_V6_URL: &str = "https://www.ris.ripe.net/dumps/riswhoisdump.IPv6.gz";
@@ -33,29 +36,37 @@ impl<T> LookupTrie<T> {
     }
 }
 
-fn parse_riswhois_file(data: &[u8]) -> Result<DataFrame, PolarsError> {
+fn parse_riswhois_file(data: &[u8]) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let cursor = Cursor::new(data);
-    CsvReadOptions::default()
-        .into_reader_with_file_handle(cursor)
-        .with_options(
-            CsvReadOptions::default()
-                .with_parse_options(CsvParseOptions::default().with_separator(b'\t'))
-                .with_has_header(false)
-                .with_skip_lines(17)
-                .with_infer_schema_length(Some(100))
-                .with_schema(Some(Arc::new(Schema::from_iter([
-                    ("origin_as".into(), DataType::String), // Can be an AS-set
-                    ("prefix".into(), DataType::String),
-                    ("visibility".into(), DataType::UInt32),
-                ])))),
-        )
-        .finish()
+    let decoder = GzDecoder::new(cursor);
+    let reader = BufReader::new(decoder);
+
+    let mut prefixes = Vec::new();
+    let mut lines_skipped = 0;
+
+    for line in reader.lines() {
+        let line = line?;
+
+        // Skip first 17 lines
+        if lines_skipped < 17 {
+            lines_skipped += 1;
+            continue;
+        }
+
+        // Parse tab-separated values and extract the prefix (second column)
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 2 {
+            prefixes.push(parts[1].to_string());
+        }
+    }
+
+    Ok(prefixes)
 }
 
 async fn download_and_parse(
     url: &str,
     name: &str,
-) -> Result<DataFrame, Box<dyn std::error::Error>> {
+) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let client = Client::new();
     let t0 = std::time::Instant::now();
     let data = client.get(url).send().await?.bytes().await?;
@@ -66,21 +77,19 @@ async fn download_and_parse(
         data.len()
     );
 
-    let df = parse_riswhois_file(&data)?;
+    let prefixes = parse_riswhois_file(&data)?;
 
-    Ok(df)
+    Ok(prefixes)
 }
 
-fn build_trie_from_dataframes(
-    dfs: Vec<DataFrame>,
+fn build_trie_from_prefixes(
+    prefix_lists: Vec<Vec<String>>,
 ) -> Result<LookupTrie<()>, Box<dyn std::error::Error>> {
     let mut table: IpnetTrie<()> = IpnetTrie::new();
     let t0 = std::time::Instant::now();
-    for df in dfs {
-        let objects = df.take_columns();
-        let prefixes = objects[1].str()?.iter();
 
-        for prefix in prefixes.flatten() {
+    for prefixes in prefix_lists {
+        for prefix in prefixes {
             if let Ok(ip_net) = prefix.parse::<IpNet>() {
                 table.insert(ip_net, ());
             }
@@ -109,10 +118,10 @@ pub fn build_ipnet_trie() -> Result<LookupTrie<()>, Box<dyn std::error::Error>> 
         );
 
         // Collect successful results
-        let mut dataframes = Vec::new();
+        let mut prefix_lists = Vec::new();
 
         match ipv4_result {
-            Ok(df) => dataframes.push(df),
+            Ok(prefixes) => prefix_lists.push(prefixes),
             Err(e) => {
                 log::error!("Failed to download/parse IPv4 data: {}", e);
                 return Err(e);
@@ -120,18 +129,18 @@ pub fn build_ipnet_trie() -> Result<LookupTrie<()>, Box<dyn std::error::Error>> 
         }
 
         match ipv6_result {
-            Ok(df) => dataframes.push(df),
+            Ok(prefixes) => prefix_lists.push(prefixes),
             Err(e) => {
                 log::error!("Failed to download/parse IPv6 data: {}", e);
                 return Err(e);
             }
         }
 
-        if dataframes.is_empty() {
+        if prefix_lists.is_empty() {
             return Err("Failed to download any RIS-Whois data".into());
         }
 
-        // Build combined trie from all dataframes
-        build_trie_from_dataframes(dataframes)
+        // Build combined trie from all prefix lists
+        build_trie_from_prefixes(prefix_lists)
     })
 }

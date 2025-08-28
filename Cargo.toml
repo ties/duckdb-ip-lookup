@@ -28,8 +28,7 @@ ipnet-trie = "0.3.0"
 itertools = "0.14.0"
 libduckdb-sys = { version = "1.3.2", features = ["loadable-extension"] }
 log = "0.4.27"
-planus = "=1.1.1"
-polars = { version = "0.50.0", features = ["decompress", "csv"] }
+flate2 = "1.0"
 reqwest = { version = "0.12.23", features = ["blocking"] }
 s3-fifo = "0.1.8"
 tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros"] }

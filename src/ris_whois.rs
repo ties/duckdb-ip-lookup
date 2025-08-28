@@ -83,16 +83,14 @@ async fn download_and_parse(
 }
 
 fn build_trie_from_prefixes(
-    prefix_lists: Vec<Vec<String>>,
+    prefixes: impl Iterator<Item = String>,
 ) -> Result<LookupTrie<()>, Box<dyn std::error::Error>> {
     let mut table: IpnetTrie<()> = IpnetTrie::new();
     let t0 = std::time::Instant::now();
 
-    for prefixes in prefix_lists {
-        for prefix in prefixes {
-            if let Ok(ip_net) = prefix.parse::<IpNet>() {
-                table.insert(ip_net, ());
-            }
+    for prefix in prefixes {
+        if let Ok(ip_net) = prefix.parse::<IpNet>() {
+            table.insert(ip_net, ());
         }
     }
 
@@ -117,30 +115,20 @@ pub fn build_ipnet_trie() -> Result<LookupTrie<()>, Box<dyn std::error::Error>> 
             download_and_parse(RISWHOIS_V6_URL, "IPv6")
         );
 
-        // Collect successful results
-        let mut prefix_lists = Vec::new();
-
-        match ipv4_result {
-            Ok(prefixes) => prefix_lists.push(prefixes),
-            Err(e) => {
+        // Extract results and chain them using itertools
+        let combined_prefixes = match (ipv4_result, ipv6_result) {
+            (Ok(v4), Ok(v6)) => v4.into_iter().chain(v6),
+            (Err(e), _) => {
                 log::error!("Failed to download/parse IPv4 data: {}", e);
                 return Err(e);
             }
-        }
-
-        match ipv6_result {
-            Ok(prefixes) => prefix_lists.push(prefixes),
-            Err(e) => {
+            (_, Err(e)) => {
                 log::error!("Failed to download/parse IPv6 data: {}", e);
                 return Err(e);
             }
-        }
+        };
 
-        if prefix_lists.is_empty() {
-            return Err("Failed to download any RIS-Whois data".into());
-        }
-
-        // Build combined trie from all prefix lists
-        build_trie_from_prefixes(prefix_lists)
+        // Build combined trie from chained iterator
+        build_trie_from_prefixes(combined_prefixes)
     })
 }

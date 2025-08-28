@@ -24,5 +24,7 @@ D select riswhois_longest_prefix('1.1.1.1');
 
 ## Changelog
 
-  * before LRU/s3-fifo: ~221 cpu-seconds for 1.456.072.651 rows
-  * after: s3-fifo@128: ~200 cpu-seconds for 1.456.072.651 rows
+  * Removed heavy (polars) dependencies, dropping file size significantly.
+  * Added a cache for frequently seen items
+    * before LRU/s3-fifo: ~221 cpu-seconds for 1.456.072.651 rows
+    * after: s3-fifo@128: ~190 cpu-seconds for 1.456.072.651 rows

@@ -15,7 +15,7 @@ use duckdb::{
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
 use ipnet::IpNet;
 use libduckdb_sys as ffi;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use std::{env, error::Error, net::IpAddr};
 
 mod lib {
@@ -23,15 +23,19 @@ mod lib {
 }
 use crate::lib::ris_whois::build_ipnet_trie;
 
-static IP_TRIE: LazyLock<IpnetTrie<()>> = LazyLock::new(|| {
-    build_ipnet_trie().unwrap_or_else(|e| {
-        eprintln!("Failed to build IP trie: {}", e);
-        IpnetTrie::new()
-    })
-});
+struct FirstLessSpecificState {
+    trie: IpnetTrie<()>,
+}
 
-#[derive(Default)]
-struct FirstLessSpecificState;
+impl Default for FirstLessSpecificState {
+    fn default() -> Self {
+        let trie = build_ipnet_trie().unwrap_or_else(|e| {
+            eprintln!("Failed to build IP trie: {}", e);
+            IpnetTrie::new()
+        });
+        FirstLessSpecificState { trie }
+    }
+}
 
 struct FirstLessSpecific;
 
@@ -39,7 +43,7 @@ impl VArrowScalar for FirstLessSpecific {
     type State = FirstLessSpecificState;
 
     fn invoke(
-        _info: &Self::State,
+        info: &Self::State,
         input: duckdb::arrow::array::RecordBatch,
     ) -> std::result::Result<
         std::sync::Arc<dyn duckdb::arrow::array::Array>,
@@ -53,15 +57,16 @@ impl VArrowScalar for FirstLessSpecific {
             .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
+        // 13.48 as average length on a testset
         let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
 
-        let mut last_value: Option<(String, Option<String>)> = None;
-        for i in 0..len {
-            if ip_array.is_valid(i) {
-                let ip_str = ip_array.value(i);
+        let mut last_value: Option<(&str, Option<String>)> = None;
 
-                match &last_value {
-                    Some((last_ip_str, last_result)) if last_ip_str == ip_str => {
+        for i in ip_array {
+            if let Some(ip_str) = i {
+                // 3811s (total) before this optimization on big testset.
+                match last_value {
+                    Some((last_ip_str, ref last_result)) if last_ip_str == ip_str => {
                         builder.append_option(last_result.clone());
                         continue;
                     }
@@ -77,7 +82,7 @@ impl VArrowScalar for FirstLessSpecific {
                 let result = match ipnet {
                     Some(net) => {
                         // Find the longest matching prefix in the trie
-                        IP_TRIE
+                        info.trie
                             .longest_match(&net)
                             .map(|(matched_net, _)| format!("{}", matched_net))
                     }
@@ -89,7 +94,7 @@ impl VArrowScalar for FirstLessSpecific {
                     None => builder.append_null(),
                 }
 
-                last_value = Some((ip_str.to_string(), result));
+                last_value = Some((ip_str, result));
             } else {
                 builder.append_null();
             }

@@ -31,11 +31,16 @@ async fn download_and_parse(
     name: &str,
 ) -> Result<DataFrame, Box<dyn std::error::Error>> {
     let client = Client::new();
+    let t0 = std::time::Instant::now();
     let data = client.get(url).send().await?.bytes().await?;
-    println!("Downloaded {} dump, size: {} bytes", name, data.len());
+    log::info!(
+        "Downloaded {} dump in {:.2}s, size: {} bytes",
+        name,
+        t0.elapsed().as_secs_f64(),
+        data.len()
+    );
 
     let df = parse_riswhois_file(&data)?;
-    println!("Parsed {} dump, {} rows", name, df.height());
 
     Ok(df)
 }
@@ -44,6 +49,7 @@ fn build_trie_from_dataframes(
     dfs: Vec<DataFrame>,
 ) -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
     let mut table: IpnetTrie<()> = IpnetTrie::new();
+    let t0 = std::time::Instant::now();
     for df in dfs {
         let objects = df.take_columns();
         let prefixes = objects[1].str()?.iter();
@@ -55,13 +61,20 @@ fn build_trie_from_dataframes(
         }
     }
 
+    log::info!(
+        "Built trie with {}v4 + {}v6 entries in {:.2}s",
+        table.len().0,
+        table.len().1,
+        t0.elapsed().as_secs_f64()
+    );
+
     Ok(table)
 }
 
 pub fn build_ipnet_trie() -> Result<IpnetTrie<()>, Box<dyn std::error::Error>> {
     // Use tokio's block_on to run async code in sync context
     tokio::runtime::Runtime::new()?.block_on(async {
-        log::info!("Starting download of IPv4 and IPv6 RIS-Whois dumps...");
+        log::info!("Starting download of IPv4 and IPv6 RIS-Whois dumps.");
 
         // Download and parse both dumps in parallel
         let (ipv4_result, ipv6_result) = tokio::join!(

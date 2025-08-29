@@ -11,7 +11,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rand::distributions::Distribution;
 use rand::rngs::StdRng;
 use rand::{seq::SliceRandom, SeedableRng};
-use rand_distr::Zipf;
+use rand_distr::{Exp, Zipf};
 
 // Import the necessary types from the main library
 use duckdb::vscalar::VArrowScalar;
@@ -124,29 +124,18 @@ fn benchmark_zipf_distributed(c: &mut Criterion) {
     group.measurement_time(std::time::Duration::from_secs(60));
 
     // Standard zipf-distributed sample benchmark (1M elements)
-    let zipf_samples = create_zipf_sample(&string_array, 1_000_000, 1.5, 42);
-    let zipf_batches = create_chunks(&zipf_samples, CHUNK_SIZE);
-
-    group.bench_function("standard_order_zipf_data", |b| {
-        b.iter(|| {
-            for batch in &zipf_batches {
-                let _result = black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
-            }
-        })
-    });
+    let n = string_array.len();
+    let zipf_distribution = ZipfU64Wrapper::new(n as u64, 1.5).unwrap();
+    let zipf_array =
+        create_sample_from_distribution(&string_array, 1_000_000, zipf_distribution, 42);
 
     // Random order zipf benchmark with different seed (43) to avoid correlation
-    let zipf_array = zipf_samples
-        .column(0)
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .unwrap();
     let mut rng = StdRng::seed_from_u64(43);
     let mut indices: Vec<u32> = (0..zipf_array.len() as u32).collect();
     indices.shuffle(&mut rng);
 
     let indices_array = UInt32Array::from(indices);
-    let random_zipf_array = arrow::compute::take(zipf_array, &indices_array, None).unwrap();
+    let random_zipf_array = arrow::compute::take(&zipf_array, &indices_array, None).unwrap();
     let random_zipf_batch = RecordBatch::try_new(schema.clone(), vec![random_zipf_array]).unwrap();
     let random_zipf_batches = create_chunks(&random_zipf_batch, CHUNK_SIZE);
 
@@ -159,8 +148,8 @@ fn benchmark_zipf_distributed(c: &mut Criterion) {
     });
 
     // Sorted order zipf benchmark
-    let sort_indices = sort_to_indices(zipf_array, None, None).unwrap();
-    let sorted_zipf_array = arrow::compute::take(zipf_array, &sort_indices, None).unwrap();
+    let sort_indices = sort_to_indices(&zipf_array, None, None).unwrap();
+    let sorted_zipf_array = arrow::compute::take(&zipf_array, &sort_indices, None).unwrap();
     let sorted_zipf_batch = RecordBatch::try_new(schema.clone(), vec![sorted_zipf_array]).unwrap();
     let sorted_zipf_batches = create_chunks(&sorted_zipf_batch, CHUNK_SIZE);
 
@@ -175,39 +164,145 @@ fn benchmark_zipf_distributed(c: &mut Criterion) {
     group.finish();
 }
 
-fn create_zipf_sample(
+fn benchmark_exponential_distributed(c: &mut Criterion) {
+    // Initialize the FirstLessSpecific state (this will build the trie)
+    let state = FirstLessSpecificState::default();
+
+    // Get the benchmarking data
+    let (schema, string_array) = benchmarking_data();
+    let n = string_array.len() as u64;
+
+    // Test different lambda values for temporal locality patterns
+    let lambda_values = [
+        (0.5, "strong_temporal_locality"),
+        (0.05, "moderate_temporal_locality"),
+        (0.005, "weak_temporal_locality"),
+    ];
+
+    for (lambda, label) in lambda_values {
+        let mut group = c.benchmark_group(&format!(
+            "exponential_distributed_lambda_{}_sample_1m",
+            label
+        ));
+        group.measurement_time(std::time::Duration::from_secs(60));
+
+        // Create exponential distributed sample (1M elements)
+        let exp_distribution = ExpU64Wrapper::new(lambda, n);
+        let exp_array =
+            create_sample_from_distribution(&string_array, 1_000_000, exp_distribution, 42);
+
+        // Random order exponential benchmark
+        let mut rng = StdRng::seed_from_u64(43);
+        let mut indices: Vec<u32> = (0..exp_array.len() as u32).collect();
+        indices.shuffle(&mut rng);
+
+        let indices_array = UInt32Array::from(indices);
+        let random_exp_array = arrow::compute::take(&exp_array, &indices_array, None).unwrap();
+        let random_exp_batch =
+            RecordBatch::try_new(schema.clone(), vec![random_exp_array]).unwrap();
+        let random_exp_batches = create_chunks(&random_exp_batch, CHUNK_SIZE);
+
+        group.bench_function("random_order_exp_data", |b| {
+            b.iter(|| {
+                for batch in &random_exp_batches {
+                    let _result =
+                        black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
+                }
+            })
+        });
+
+        // Sorted order exponential benchmark
+        let sort_indices = sort_to_indices(&exp_array, None, None).unwrap();
+        let sorted_exp_array = arrow::compute::take(&exp_array, &sort_indices, None).unwrap();
+        let sorted_exp_batch =
+            RecordBatch::try_new(schema.clone(), vec![sorted_exp_array]).unwrap();
+        let sorted_exp_batches = create_chunks(&sorted_exp_batch, CHUNK_SIZE);
+
+        group.bench_function("alphabetical_order_exp_data", |b| {
+            b.iter(|| {
+                for batch in &sorted_exp_batches {
+                    let _result =
+                        black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
+                }
+            })
+        });
+
+        group.finish();
+    }
+}
+
+fn create_sample_from_distribution<T>(
     string_array: &StringArray,
     sample_size: usize,
-    exponent: f64,
+    distribution: T,
     seed: u64,
-) -> RecordBatch {
+) -> StringArray
+where
+    T: Distribution<u64>,
+{
     let mut rng = StdRng::seed_from_u64(seed);
-    let n = string_array.len();
 
-    // Create Zipf distribution
-    let zipf = Zipf::new(n as u64, exponent).unwrap();
-
-    // Generate Zipf-distributed indices
-    let mut zipf_indices = Vec::with_capacity(sample_size);
+    // Generate distribution-based indices
+    let mut indices = Vec::with_capacity(sample_size);
     for _ in 0..sample_size {
-        // zipf.sample() returns 1-based index, convert to 0-based
-        let index = (zipf.sample(&mut rng) as u64 - 1) as u32;
-        zipf_indices.push(index);
+        // Convert 1-based to 0-based index for distributions like Zipf
+        let sample = distribution.sample(&mut rng);
+        let index = (sample - 1) as u32;
+        indices.push(index);
     }
 
-    // Create array from Zipf-distributed indices
-    let indices_array = UInt32Array::from(zipf_indices);
-    let zipf_array = arrow::compute::take(string_array, &indices_array, None).unwrap();
+    // Create array from distribution-based indices
+    let indices_array = UInt32Array::from(indices);
+    let sampled_array = arrow::compute::take(string_array, &indices_array, None).unwrap();
 
-    // Create record batch
-    let schema = string_array.data_type().clone();
-    RecordBatch::try_new(
-        Arc::new(arrow::datatypes::Schema::new(vec![
-            arrow::datatypes::Field::new("ip", schema, false),
-        ])),
-        vec![zipf_array],
-    )
-    .unwrap()
+    sampled_array
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap()
+        .clone()
+}
+
+// Wrapper for Zipf distribution to convert f64 to u64
+struct ZipfU64Wrapper {
+    zipf: Zipf<f64>,
+}
+
+impl ZipfU64Wrapper {
+    fn new(n: u64, exponent: f64) -> Result<Self, rand_distr::ZipfError> {
+        Ok(Self {
+            zipf: Zipf::new(n, exponent)?,
+        })
+    }
+}
+
+impl Distribution<u64> for ZipfU64Wrapper {
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> u64 {
+        self.zipf.sample(rng) as u64
+    }
+}
+
+// Wrapper for Exponential distribution to convert to bounded u64 indices
+struct ExpU64Wrapper {
+    exp: Exp<f64>,
+    max_index: u64,
+}
+
+impl ExpU64Wrapper {
+    fn new(lambda: f64, max_index: u64) -> Self {
+        Self {
+            exp: Exp::new(lambda).unwrap(),
+            max_index,
+        }
+    }
+}
+
+impl Distribution<u64> for ExpU64Wrapper {
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> u64 {
+        // Sample from exponential distribution and map to index range [1, max_index]
+        let exp_sample = self.exp.sample(rng);
+        // Use modulo to wrap around and add 1 to make it 1-based
+        ((exp_sample as u64) % self.max_index) + 1
+    }
 }
 
 fn create_chunks(batch: &RecordBatch, chunk_size: usize) -> Vec<RecordBatch> {
@@ -226,6 +321,7 @@ fn create_chunks(batch: &RecordBatch, chunk_size: usize) -> Vec<RecordBatch> {
 criterion_group!(
     benches,
     benchmark_first_less_specific,
-    benchmark_zipf_distributed
+    benchmark_zipf_distributed,
+    benchmark_exponential_distributed
 );
 criterion_main!(benches);

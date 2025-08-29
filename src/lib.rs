@@ -5,6 +5,8 @@ extern crate libduckdb_sys;
 use duckdb::ffi;
 
 use env_logger::Env;
+#[cfg(feature = "s3fifo")]
+use s3_fifo::{S3FIFOKey, S3FIFO};
 
 use duckdb::{
     arrow::{self, array::Array, datatypes::DataType},
@@ -20,7 +22,7 @@ mod ris_whois;
 use ris_whois::{build_ipnet_trie, LookupTrie};
 
 pub struct FirstLessSpecificState {
-    trie: LookupTrie<String>,
+    trie: LookupTrie<()>,
 }
 
 impl Default for FirstLessSpecificState {
@@ -51,17 +53,43 @@ impl VArrowScalar for FirstLessSpecific {
             .downcast_ref::<arrow::array::StringArray>()
             .unwrap();
 
+        #[cfg(feature = "s3fifo")]
+        let mut cache: S3FIFO<S3FIFOKey<Option<&str>>, Option<String>> = S3FIFO::new(128);
+
         // 13.48 as average length on a testset
         let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
 
         for i in ip_array {
             match i {
                 Some(ip_str) => {
-                    let res = info.trie.lookup(ip_str).map(|r| r.1.as_str());
+                    #[cfg(feature = "s3fifo")]
+                    {
+                        let key = S3FIFOKey::new(&i);
 
-                    match res {
-                        Some(pfx) => builder.append_value(pfx),
+                        if let Some(cached) = cache.get(&key) {
+                            match &cached {
+                                Some(ref pfx) => builder.append_value(pfx),
+                                None => builder.append_null(),
+                            }
+                            continue;
+                        }
+                    }
+
+                    let res = info
+                        .trie
+                        .lookup(ip_str)
+                        .map(|r| r.0)
+                        .map(|ipnet| ipnet.to_string());
+
+                    match &res {
+                        Some(ref pfx) => builder.append_value(pfx),
                         None => builder.append_null(),
+                    }
+
+                    #[cfg(feature = "s3fifo")]
+                    {
+                        let key = S3FIFOKey::new(&i);
+                        cache.put(key, res);
                     }
                 }
                 None => builder.append_null(),

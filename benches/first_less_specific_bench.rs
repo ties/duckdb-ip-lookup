@@ -3,7 +3,7 @@ use std::{fs::File, sync::Arc};
 use arrow::{
     array::{Array, StringArray, UInt32Array},
     compute::{concat, sort_to_indices},
-    datatypes::DataType,
+    datatypes::{DataType, Schema},
     record_batch::RecordBatch,
 };
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
@@ -20,10 +20,7 @@ use ip_more_less_specific::{FirstLessSpecific, FirstLessSpecificState};
 const CHUNK_SIZE: usize = 2048;
 const TEST_DATA_PATH: &str = "test/data/openintel-radar-2025-08-28.parquet";
 
-fn benchmark_first_less_specific(c: &mut Criterion) {
-    // Initialize the FirstLessSpecific state (this will build the trie)
-    let state = FirstLessSpecificState::default();
-
+fn benchmarking_data() -> (Arc<Schema>, StringArray) {
     // Open the parquet file
     let file = File::open(TEST_DATA_PATH).expect("Failed to open test data file");
     let builder = ParquetRecordBatchReaderBuilder::try_new(file).unwrap();
@@ -51,6 +48,16 @@ fn benchmark_first_less_specific(c: &mut Criterion) {
         .downcast_ref::<StringArray>()
         .unwrap();
 
+    (schema, string_array.to_owned())
+}
+
+fn benchmark_first_less_specific(c: &mut Criterion) {
+    // Initialize the FirstLessSpecific state (this will build the trie)
+    let state = FirstLessSpecificState::default();
+
+    // Get the benchmarking data
+    let (schema, string_array) = benchmarking_data();
+
     let mut group = c.benchmark_group("first_less_specific");
     group.measurement_time(std::time::Duration::from_secs(60));
 
@@ -73,7 +80,7 @@ fn benchmark_first_less_specific(c: &mut Criterion) {
     indices.shuffle(&mut rng);
 
     let indices_array = UInt32Array::from(indices);
-    let random_array = arrow::compute::take(string_array, &indices_array, None).unwrap();
+    let random_array = arrow::compute::take(&string_array, &indices_array, None).unwrap();
     let random_batch = RecordBatch::try_new(batches[0].schema(), vec![random_array]).unwrap();
 
     // Split back into chunks for processing
@@ -88,8 +95,8 @@ fn benchmark_first_less_specific(c: &mut Criterion) {
     });
 
     // Alphabetical order benchmark
-    let sort_indices = sort_to_indices(string_array, None, None).unwrap();
-    let sorted_array = arrow::compute::take(string_array, &sort_indices, None).unwrap();
+    let sort_indices = sort_to_indices(&string_array, None, None).unwrap();
+    let sorted_array = arrow::compute::take(&string_array, &sort_indices, None).unwrap();
     let sorted_batch = RecordBatch::try_new(batches[0].schema(), vec![sorted_array]).unwrap();
 
     // Split back into chunks for processing
@@ -103,13 +110,63 @@ fn benchmark_first_less_specific(c: &mut Criterion) {
         })
     });
 
-    // Zipf-distributed sample benchmark (1M elements)
-    let zipf_samples = create_zipf_sample(string_array, 1_000_000, 1.5, 42);
+    group.finish();
+}
+
+fn benchmark_zipf_distributed(c: &mut Criterion) {
+    // Initialize the FirstLessSpecific state (this will build the trie)
+    let state = FirstLessSpecificState::default();
+
+    // Get the benchmarking data
+    let (schema, string_array) = benchmarking_data();
+
+    let mut group = c.benchmark_group("zipf_distributed_1m");
+    group.measurement_time(std::time::Duration::from_secs(60));
+
+    // Standard zipf-distributed sample benchmark (1M elements)
+    let zipf_samples = create_zipf_sample(&string_array, 1_000_000, 1.5, 42);
     let zipf_batches = create_chunks(&zipf_samples, CHUNK_SIZE);
 
-    group.bench_function("zipf_distributed_1m_openintel_radar_data", |b| {
+    group.bench_function("standard_order_zipf_data", |b| {
         b.iter(|| {
             for batch in &zipf_batches {
+                let _result = black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
+            }
+        })
+    });
+
+    // Random order zipf benchmark with different seed (43) to avoid correlation
+    let zipf_array = zipf_samples
+        .column(0)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    let mut rng = StdRng::seed_from_u64(43);
+    let mut indices: Vec<u32> = (0..zipf_array.len() as u32).collect();
+    indices.shuffle(&mut rng);
+
+    let indices_array = UInt32Array::from(indices);
+    let random_zipf_array = arrow::compute::take(zipf_array, &indices_array, None).unwrap();
+    let random_zipf_batch = RecordBatch::try_new(schema.clone(), vec![random_zipf_array]).unwrap();
+    let random_zipf_batches = create_chunks(&random_zipf_batch, CHUNK_SIZE);
+
+    group.bench_function("random_order_seed43_zipf_data", |b| {
+        b.iter(|| {
+            for batch in &random_zipf_batches {
+                let _result = black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
+            }
+        })
+    });
+
+    // Sorted order zipf benchmark
+    let sort_indices = sort_to_indices(zipf_array, None, None).unwrap();
+    let sorted_zipf_array = arrow::compute::take(zipf_array, &sort_indices, None).unwrap();
+    let sorted_zipf_batch = RecordBatch::try_new(schema.clone(), vec![sorted_zipf_array]).unwrap();
+    let sorted_zipf_batches = create_chunks(&sorted_zipf_batch, CHUNK_SIZE);
+
+    group.bench_function("alphabetical_order_zipf_data", |b| {
+        b.iter(|| {
+            for batch in &sorted_zipf_batches {
                 let _result = black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
             }
         })
@@ -166,5 +223,9 @@ fn create_chunks(batch: &RecordBatch, chunk_size: usize) -> Vec<RecordBatch> {
     chunks
 }
 
-criterion_group!(benches, benchmark_first_less_specific);
+criterion_group!(
+    benches,
+    benchmark_first_less_specific,
+    benchmark_zipf_distributed
+);
 criterion_main!(benches);

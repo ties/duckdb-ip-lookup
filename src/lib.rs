@@ -6,9 +6,7 @@ use duckdb::ffi;
 
 use env_logger::Env;
 #[cfg(feature = "s3fifo")]
-use s3_fifo::S3FIFO;
-#[cfg(feature = "s3fifo")]
-use std::cell::RefCell;
+use s3_fifo::{S3FIFOKey, S3FIFO};
 
 use duckdb::{
     arrow::{self, array::Array, datatypes::DataType},
@@ -56,68 +54,45 @@ impl VArrowScalar for FirstLessSpecific {
             .unwrap();
 
         #[cfg(feature = "s3fifo")]
-        thread_local! {
-            static CACHE: RefCell<S3FIFO<String, Option<String>>> =
-                RefCell::new(S3FIFO::new(128));
-        }
+        let mut cache: S3FIFO<S3FIFOKey<Option<&str>>, Option<String>> = S3FIFO::new(128);
 
         // 13.48 as average length on a testset
         let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
 
-        #[cfg(feature = "s3fifo")]
-        {
-            CACHE.with(|cache| {
-                let mut cache_ref = cache.borrow_mut();
+        for i in ip_array {
+            match i {
+                Some(ip_str) => {
+                    #[cfg(feature = "s3fifo")]
+                    {
+                        let key = S3FIFOKey::new(&i);
 
-                for i in ip_array {
-                    match i {
-                        Some(ip_str) => {
-                            let ip_key = ip_str.to_string();
-
-                            if let Some(cached) = cache_ref.get(&ip_key).cloned() {
-                                match &cached {
-                                    Some(ref pfx) => builder.append_value(pfx),
-                                    None => builder.append_null(),
-                                }
-                            } else {
-                                let res = info
-                                    .trie
-                                    .lookup(ip_str)
-                                    .map(|r| r.0)
-                                    .map(|ipnet| ipnet.to_string());
-
-                                match &res {
-                                    Some(ref pfx) => builder.append_value(pfx),
-                                    None => builder.append_null(),
-                                }
-
-                                cache_ref.put(ip_key, res);
+                        if let Some(cached) = cache.get(&key) {
+                            match &cached {
+                                Some(ref pfx) => builder.append_value(pfx),
+                                None => builder.append_null(),
                             }
+                            continue;
                         }
+                    }
+
+                    let res = info
+                        .trie
+                        .lookup(ip_str)
+                        .map(|r| r.0)
+                        .map(|ipnet| ipnet.to_string());
+
+                    match &res {
+                        Some(ref pfx) => builder.append_value(pfx),
                         None => builder.append_null(),
                     }
-                }
-            });
-        }
 
-        #[cfg(not(feature = "s3fifo"))]
-        {
-            for i in ip_array {
-                match i {
-                    Some(ip_str) => {
-                        let res = info
-                            .trie
-                            .lookup(ip_str)
-                            .map(|r| r.0)
-                            .map(|ipnet| ipnet.to_string());
-
-                        match &res {
-                            Some(ref pfx) => builder.append_value(pfx),
-                            None => builder.append_null(),
-                        }
+                    #[cfg(feature = "s3fifo")]
+                    {
+                        let key = S3FIFOKey::new(&i);
+                        cache.put(key, res);
                     }
-                    None => builder.append_null(),
                 }
+                None => builder.append_null(),
             }
         }
 

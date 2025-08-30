@@ -2,6 +2,7 @@ extern crate duckdb;
 extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
 
+use arrow::compute::kernels::cmp;
 use duckdb::ffi;
 
 use env_logger::Env;
@@ -12,8 +13,10 @@ use duckdb::{
     Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
-use std::sync::Arc;
+use std::{collections::linked_list::Iter, iter::repeat, sync::Arc};
 use std::{env, error::Error};
+use itertools::EitherOrBoth::{Both, Left, Right};
+use itertools::Itertools;
 
 #[path = "ris_whois.rs"]
 mod ris_whois;
@@ -55,27 +58,73 @@ impl VArrowScalar for FirstLessSpecific {
         let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
 
         // Now find the consecutive equal items
-        // let orig = ip_array.slice(0, len - 1);
-        // let offset = ip_array.slice(1, len - 1);
+        let orig = ip_array.slice(0, len - 1);
+        let offset = ip_array.slice(1, len - 1);
 
-        // let next_equal = cmp::eq(
-        //     &orig,
-        //     &offset,
-        // )?;
+        // The result of [`not_distinct`] is never NULL.
+        let next_identical = cmp::not_distinct(
+            &orig,
+            &offset,
+        )?;
+        debug_assert!(next_identical.len() == len - 1);
 
-        for i in ip_array {
-            match i {
-                Some(ip_str) => {
-                    let res = info.trie.lookup(ip_str).map(|r| r.1.as_str());
+        let mut repetitions = 0;
 
-                    match res {
-                        Some(pfx) => builder.append_value(pfx),
-                        None => builder.append_null(),
+        for (elem, repeating) in ip_array.iter().zip(next_identical.iter()) {
+            match (elem, repeating) {
+                (_, Some(true)) => repetitions += 1,
+                (elem, Some(false)) => {
+                    // It is possible to always loop/append_nulls(n) even when there are no repetitions.
+                    // This needs to be benchmarked.
+                    match repetitions {
+                        1.. => {
+                            // End of a streak
+                            match elem {
+                                Some(ip_str) => {
+                                    let res = info.trie.lookup(ip_str);
+                                    match res {
+                                        Some((_, val)) => {
+                                            for _ in 0..repetitions + 1 {
+                                                builder.append_value(val);
+                                            }
+                                        },
+                                        None => builder.append_nulls(repetitions + 1),
+                                    }
+                                }
+                                None => builder.append_nulls(repetitions + 1),
+                            };
+                            repetitions = 0;
+                        }
+                        0 => {
+                            match elem {
+                                Some(ip_str) => {
+                                    let res = info.trie.lookup(ip_str);
+                                    match res {
+                                        Some((_, val)) => builder.append_value(val),
+                                        None => builder.append_null(),
+                                    }
+                                }
+                                None => builder.append_null(),
+                            };
+                        }
                     }
-                }
-                None => builder.append_null(),
+                },
+                (_, None) => unreachable!("not_distinct is never none."),
             }
         }
+
+        // Final element
+        match ip_array.is_null(len - 1) {
+            false => {
+                let res = info.trie.lookup(ip_array.value(len - 1));
+                match res {
+                    Some((_, val)) => builder.extend(repeat(Some(val)).take(repetitions + 1)),
+                    None => builder.append_nulls(repetitions + 1),
+                }
+            },
+            true => builder.append_nulls(repetitions + 1),
+        };
+
 
         Ok(Arc::new(builder.finish()))
     }

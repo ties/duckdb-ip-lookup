@@ -2,10 +2,10 @@ extern crate duckdb;
 extern crate duckdb_loadable_macros;
 extern crate libduckdb_sys;
 
-use ipnet_trie::IpnetTrie;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
+use arrow::compute::kernels::cmp;
+use duckdb::ffi;
+
+use env_logger::Env;
 
 use duckdb::{
     arrow::{self, array::Array, datatypes::DataType},
@@ -13,31 +13,28 @@ use duckdb::{
     Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
-use ipnet::IpNet;
-use libduckdb_sys as ffi;
-use std::sync::Arc;
-use std::{env, error::Error, net::IpAddr};
+use std::{collections::linked_list::Iter, iter::repeat, sync::Arc};
+use std::{env, error::Error};
+use itertools::EitherOrBoth::{Both, Left, Right};
+use itertools::Itertools;
 
-mod lib {
-    pub mod ris_whois;
-}
-use crate::lib::ris_whois::build_ipnet_trie;
+#[path = "ris_whois.rs"]
+mod ris_whois;
+use ris_whois::{build_ipnet_trie, LookupTrie};
 
-struct FirstLessSpecificState {
-    trie: IpnetTrie<()>,
+pub struct FirstLessSpecificState {
+    trie: LookupTrie<String>,
 }
 
 impl Default for FirstLessSpecificState {
     fn default() -> Self {
-        let trie = build_ipnet_trie().unwrap_or_else(|e| {
-            eprintln!("Failed to build IP trie: {}", e);
-            IpnetTrie::new()
-        });
+        // There is no recovery if building the trie fails.
+        let trie = build_ipnet_trie().unwrap();
         FirstLessSpecificState { trie }
     }
 }
 
-struct FirstLessSpecific;
+pub struct FirstLessSpecific;
 
 impl VArrowScalar for FirstLessSpecific {
     type State = FirstLessSpecificState;
@@ -60,45 +57,74 @@ impl VArrowScalar for FirstLessSpecific {
         // 13.48 as average length on a testset
         let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
 
-        let mut last_value: Option<(&str, Option<String>)> = None;
+        // Now find the consecutive equal items
+        let orig = ip_array.slice(0, len - 1);
+        let offset = ip_array.slice(1, len - 1);
 
-        for i in ip_array {
-            if let Some(ip_str) = i {
-                // 3811s (total) before this optimization on big testset.
-                match last_value {
-                    Some((last_ip_str, ref last_result)) if last_ip_str == ip_str => {
-                        builder.append_option(last_result.clone());
-                        continue;
+        // The result of [`not_distinct`] is never NULL.
+        let next_identical = cmp::not_distinct(
+            &orig,
+            &offset,
+        )?;
+        debug_assert!(next_identical.len() == len - 1);
+
+        let mut repetitions = 0;
+
+        for (elem, repeating) in ip_array.iter().zip(next_identical.iter()) {
+            match (elem, repeating) {
+                (_, Some(true)) => repetitions += 1,
+                (elem, Some(false)) => {
+                    // It is possible to always loop/append_nulls(n) even when there are no repetitions.
+                    // This needs to be benchmarked.
+                    match repetitions {
+                        1.. => {
+                            // End of a streak
+                            match elem {
+                                Some(ip_str) => {
+                                    let res = info.trie.lookup(ip_str);
+                                    match res {
+                                        Some((_, val)) => {
+                                            for _ in 0..repetitions + 1 {
+                                                builder.append_value(val);
+                                            }
+                                        },
+                                        None => builder.append_nulls(repetitions + 1),
+                                    }
+                                }
+                                None => builder.append_nulls(repetitions + 1),
+                            };
+                            repetitions = 0;
+                        }
+                        0 => {
+                            match elem {
+                                Some(ip_str) => {
+                                    let res = info.trie.lookup(ip_str);
+                                    match res {
+                                        Some((_, val)) => builder.append_value(val),
+                                        None => builder.append_null(),
+                                    }
+                                }
+                                None => builder.append_null(),
+                            };
+                        }
                     }
-                    _ => {}
-                }
-
-                // Parse the input as either an IP network (with CIDR) or IP address
-                let ipnet = match ip_str {
-                    s if s.contains('/') => s.parse::<IpNet>().ok(),
-                    s => s.parse::<IpAddr>().ok().map(IpNet::from),
-                };
-
-                let result = match ipnet {
-                    Some(net) => {
-                        // Find the longest matching prefix in the trie
-                        info.trie
-                            .longest_match(&net)
-                            .map(|(matched_net, _)| format!("{}", matched_net))
-                    }
-                    None => None,
-                };
-
-                match result {
-                    Some(ref r) => builder.append_value(r),
-                    None => builder.append_null(),
-                }
-
-                last_value = Some((ip_str, result));
-            } else {
-                builder.append_null();
+                },
+                (_, None) => unreachable!("not_distinct is never none."),
             }
         }
+
+        // Final element
+        match ip_array.is_null(len - 1) {
+            false => {
+                let res = info.trie.lookup(ip_array.value(len - 1));
+                match res {
+                    Some((_, val)) => builder.extend(repeat(Some(val)).take(repetitions + 1)),
+                    None => builder.append_nulls(repetitions + 1),
+                }
+            },
+            true => builder.append_nulls(repetitions + 1),
+        };
+
 
         Ok(Arc::new(builder.finish()))
     }
@@ -111,9 +137,9 @@ impl VArrowScalar for FirstLessSpecific {
     }
 }
 
-/// Initialize tracing subscriber with log level based on DUCKDB_LOG_LEVEL environment variable
-fn init_tracing() {
-    // Map DuckDB log levels to tracing levels
+/// Initialize env_logger with log level based on DUCKDB_LOG_LEVEL environment variable
+fn init_logging() {
+    // Map DuckDB log levels to env_logger levels
     let log_level = match env::var("DUCKDB_LOG_LEVEL").as_deref() {
         Ok("ERROR") => "error",
         Ok("WARN") => "warn",
@@ -123,14 +149,13 @@ fn init_tracing() {
         _ => "info", // Default to info if not set or unrecognized
     };
 
-    // Create env filter with the determined log level for this crate
-    let filter = EnvFilter::new(format!("{}={}", env!("CARGO_PKG_NAME"), log_level));
-
-    // Initialize subscriber only if not already initialized
-    let _ = tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(filter)
-        .try_init();
+    // Initialize env_logger with the determined log level
+    let _ = env_logger::Builder::from_env(Env::default().default_filter_or(format!(
+        "{}={}",
+        env!("CARGO_PKG_NAME"),
+        log_level
+    )))
+    .try_init();
 }
 
 /// # Safety
@@ -138,8 +163,8 @@ fn init_tracing() {
 /// It registers the scalar function with DuckDB.
 #[duckdb_entrypoint_c_api()]
 pub unsafe fn extension_entrypoint(con: Connection) -> Result<(), Box<dyn Error>> {
-    // Initialize tracing with DuckDB log level
-    init_tracing();
+    // Initialize logging with DuckDB log level
+    init_logging();
 
     con.register_scalar_function::<FirstLessSpecific>("riswhois_longest_prefix")
         .expect("Failed to register function");

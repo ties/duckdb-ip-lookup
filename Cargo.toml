@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
 
 [profile.release]
-lto = true
+lto = "fat"
 strip = true
 
 [[example]]
@@ -19,18 +22,33 @@ name = "ip_more_less_specific"
 path = "src/wasm_lib.rs"
 crate-type = ["staticlib"]
 
+[[bench]]
+name = "first_less_specific_bench"
+harness = false
+
 [dependencies]
-duckdb = { version = "1.3.2", features = ["vscalar", "vscalar-arrow", "vtab-arrow", "vtab-loadable"] }
+# vtab-arrow seems to be needed even though it is not used
+duckdb = { version = "1.3.2", features = ["vscalar", "vscalar-arrow", "vtab-arrow"] }
 duckdb-loadable-macros = "0.1.9"
-env_logger = "0.11.8"
+libduckdb-sys = { version = "1.3.2", features = ["loadable-extension"] }
+
+itertools = "0.14.0"
+
 ipnet = "2.11.0"
 ipnet-trie = "0.3.0"
-itertools = "0.14.0"
-libduckdb-sys = { version = "1.3.2", features = ["loadable-extension"] }
+s3-fifo = { version = "0.1.8", optional = true }
+
 log = "0.4.27"
-planus = "=1.1.1"
-polars = { version = "0.50.0", features = ["decompress", "csv"] }
-reqwest = { version = "0.12.23", features = ["blocking"] }
+env_logger = "0.11.8"
+
+reqwest = { version = "0.12.23" }
+flate2 = { version = "1.0", features = ["rust_backend"] }
 tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "macros"] }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+arrow-ord = "56.1.0"
+
+[dev-dependencies]
+arrow = "55.1.0"
+parquet = "55.1.0"
+criterion = { version = "0.5", features = ["html_reports"] }
+rand = { version = "0.8", features = ["std_rng"] }
+rand_distr = "0.4"

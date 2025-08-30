@@ -5,3 +5,7 @@ configure
 duckdb_unittest_tempdir
 /test/bin
 venv
+.claude/settings.local.json
+
+# Criterion benchmark reports
+target/criterion/

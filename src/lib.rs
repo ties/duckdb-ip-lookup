@@ -54,6 +54,15 @@ impl VArrowScalar for FirstLessSpecific {
         // 13.48 as average length on a testset
         let mut builder = arrow::array::StringBuilder::with_capacity(len, len * 15);
 
+        // Now find the consecutive equal items
+        // let orig = ip_array.slice(0, len - 1);
+        // let offset = ip_array.slice(1, len - 1);
+
+        // let next_equal = cmp::eq(
+        //     &orig,
+        //     &offset,
+        // )?;
+
         for i in ip_array {
             match i {
                 Some(ip_str) => {

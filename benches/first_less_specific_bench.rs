@@ -126,30 +126,27 @@ fn benchmark_zipf_distributed(c: &mut Criterion) {
     // Standard zipf-distributed sample benchmark (1M elements)
     let n = string_array.len();
     let zipf_distribution = ZipfU64Wrapper::new(n as u64, 1.5).unwrap();
-    let zipf_array =
-        create_sample_from_distribution(&string_array, 1_000_000, zipf_distribution, 42);
+    let zipf_array = Arc::new(create_sample_from_distribution(
+        &string_array,
+        1_000_000,
+        zipf_distribution,
+        42,
+    ));
 
-    // Random order zipf benchmark with different seed (43) to avoid correlation
-    let mut rng = StdRng::seed_from_u64(43);
-    let mut indices: Vec<u32> = (0..zipf_array.len() as u32).collect();
-    indices.shuffle(&mut rng);
+    let zipf_batch = RecordBatch::try_new(schema.clone(), vec![zipf_array.clone()]).unwrap();
+    let zipf_batches = create_chunks(&zipf_batch, CHUNK_SIZE);
 
-    let indices_array = UInt32Array::from(indices);
-    let random_zipf_array = arrow::compute::take(&zipf_array, &indices_array, None).unwrap();
-    let random_zipf_batch = RecordBatch::try_new(schema.clone(), vec![random_zipf_array]).unwrap();
-    let random_zipf_batches = create_chunks(&random_zipf_batch, CHUNK_SIZE);
-
-    group.bench_function("random_order_seed43_zipf_data", |b| {
+    group.bench_function("original", |b| {
         b.iter(|| {
-            for batch in &random_zipf_batches {
+            for batch in &zipf_batches {
                 let _result = black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
             }
         })
     });
 
     // Sorted order zipf benchmark
-    let sort_indices = sort_to_indices(&zipf_array, None, None).unwrap();
-    let sorted_zipf_array = arrow::compute::take(&zipf_array, &sort_indices, None).unwrap();
+    let sort_indices = sort_to_indices(zipf_array.as_ref(), None, None).unwrap();
+    let sorted_zipf_array = arrow::compute::take(zipf_array.as_ref(), &sort_indices, None).unwrap();
     let sorted_zipf_batch = RecordBatch::try_new(schema.clone(), vec![sorted_zipf_array]).unwrap();
     let sorted_zipf_batches = create_chunks(&sorted_zipf_batch, CHUNK_SIZE);
 
@@ -174,35 +171,24 @@ fn benchmark_exponential_distributed(c: &mut Criterion) {
 
     // Test different lambda values for temporal locality patterns
     let lambda_values = [
-        (0.5, "strong_temporal_locality"),
-        (0.05, "moderate_temporal_locality"),
-        (0.005, "weak_temporal_locality"),
+        0.5,   // Strong temporal locality,
+        0.05,  // Moderate temporal locality
+        0.005, // Weak temoral locality
     ];
 
-    for (lambda, label) in lambda_values {
-        let mut group = c.benchmark_group(&format!(
-            "exponential_distributed_lambda_{}_sample_1m",
-            label
-        ));
+    let mut group = c.benchmark_group("exponential_distributed");
+    for lambda in lambda_values {
         group.measurement_time(std::time::Duration::from_secs(60));
 
         // Create exponential distributed sample (1M elements)
         let exp_distribution = ExpU64Wrapper::new(lambda, n);
         let exp_array =
             create_sample_from_distribution(&string_array, 1_000_000, exp_distribution, 42);
+        let exp_batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(exp_array)]).unwrap();
 
-        // Random order exponential benchmark
-        let mut rng = StdRng::seed_from_u64(43);
-        let mut indices: Vec<u32> = (0..exp_array.len() as u32).collect();
-        indices.shuffle(&mut rng);
+        let random_exp_batches = create_chunks(&exp_batch, CHUNK_SIZE);
 
-        let indices_array = UInt32Array::from(indices);
-        let random_exp_array = arrow::compute::take(&exp_array, &indices_array, None).unwrap();
-        let random_exp_batch =
-            RecordBatch::try_new(schema.clone(), vec![random_exp_array]).unwrap();
-        let random_exp_batches = create_chunks(&random_exp_batch, CHUNK_SIZE);
-
-        group.bench_function("random_order_exp_data", |b| {
+        group.bench_function(format!("lambda_{lambda}"), |b| {
             b.iter(|| {
                 for batch in &random_exp_batches {
                     let _result =
@@ -210,25 +196,8 @@ fn benchmark_exponential_distributed(c: &mut Criterion) {
                 }
             })
         });
-
-        // Sorted order exponential benchmark
-        let sort_indices = sort_to_indices(&exp_array, None, None).unwrap();
-        let sorted_exp_array = arrow::compute::take(&exp_array, &sort_indices, None).unwrap();
-        let sorted_exp_batch =
-            RecordBatch::try_new(schema.clone(), vec![sorted_exp_array]).unwrap();
-        let sorted_exp_batches = create_chunks(&sorted_exp_batch, CHUNK_SIZE);
-
-        group.bench_function("alphabetical_order_exp_data", |b| {
-            b.iter(|| {
-                for batch in &sorted_exp_batches {
-                    let _result =
-                        black_box(FirstLessSpecific::invoke(&state, batch.clone()).unwrap());
-                }
-            })
-        });
-
-        group.finish();
     }
+    group.finish();
 }
 
 fn create_sample_from_distribution<T>(

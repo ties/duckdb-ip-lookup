@@ -39,6 +39,8 @@ Test files are in SQLLogicTest format at `test/sql/ip_more_less_specific.test`.
 
 ## Code Quality
 
+**IMPORTANT**: After every code edit, always run `make debug` to ensure the build succeeds.
+
 Format Rust code:
 ```bash
 cargo fmt
@@ -56,12 +58,17 @@ cargo test
 
 ## Benchmarks
 
-Run performance benchmarks:
+Run performance benchmarks (short version for verification):
+```bash
+cargo bench -- --quick
+```
+
+Run full performance benchmarks:
 ```bash
 cargo bench
 ```
 
-**IMPORTANT**: When modifying benchmark code in `benches/`, always run `cargo bench` to verify the benchmarks still work correctly.
+**IMPORTANT**: When modifying benchmark code in `benches/`, always run `cargo bench -- --quick` to verify the benchmarks still work correctly.
 
 ## Extension Loading
 
@@ -103,9 +110,5 @@ make debug && make test_debug
 Key dependencies include:
 - `duckdb` v1.3.2 with Arrow and VScalar features
 - `ipnet-trie` v0.3.0 for IP prefix operations
-- `polars` v0.50.0 for CSV processing
 - `reqwest` v0.12.23 for HTTP downloads
 
-## Known Issues
-
-- Extensions may fail to load on Windows with Python 3.11 - use Python 3.12 if encountered

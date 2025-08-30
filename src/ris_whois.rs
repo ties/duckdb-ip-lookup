@@ -119,11 +119,11 @@ pub fn build_ipnet_trie() -> Result<LookupTrie<String>, Box<dyn std::error::Erro
         let combined_prefixes = match (ipv4_result, ipv6_result) {
             (Ok(v4), Ok(v6)) => v4.into_iter().chain(v6),
             (Err(e), _) => {
-                log::error!("Failed to download/parse IPv4 data: {}", e);
+                log::error!("Failed to download/parse IPv4 data: {e}");
                 return Err(e);
             }
             (_, Err(e)) => {
-                log::error!("Failed to download/parse IPv6 data: {}", e);
+                log::error!("Failed to download/parse IPv6 data: {e}");
                 return Err(e);
             }
         };

@@ -12,10 +12,109 @@ Catalog Error: Scalar Function with name riswhois_longest_prefix does not exist!
 # Require statement will ensure the extension is loaded from now on
 require ip_more_less_specific
 
-require icu
-
-# Confirm the extension works
+# Base cases:
+## Exiting entry
 query I
 SELECT riswhois_longest_prefix('8.8.8.8');
 ----
 8.8.8.0/24
+
+## Null is preserved
+query I
+SELECT riswhois_longest_prefix(NULL);
+----
+NULL
+
+## Null is preserved
+query I
+CREATE TEMPORARY TABLE nulls (input varchar);
+INSERT INTO nulls VALUES 
+    (NULL),
+    (NULL),
+    (NULL);
+SELECT riswhois_longest_prefix(input) FROM nulls;
+----
+NULL
+NULL
+NULL
+
+
+# Various patterns with null
+query I
+CREATE TEMPORARY TABLE null_first (input varchar);
+INSERT INTO null_first VALUES 
+    (NULL),
+    ('1.1.1.1');
+SELECT riswhois_longest_prefix(input) FROM null_first;
+----
+NULL
+1.1.1.0/24
+
+query I
+CREATE TEMPORARY TABLE null_last (input varchar);
+INSERT INTO null_last VALUES 
+    ('1.1.1.1'),
+    (NULL);
+SELECT riswhois_longest_prefix(input) FROM null_last;
+----
+1.1.1.0/24
+NULL
+
+query I
+CREATE TEMPORARY TABLE null_sandwich (input varchar);
+INSERT INTO null_sandwich VALUES 
+    (NULL),
+    ('1.1.1.1'),
+    (NULL);
+SELECT riswhois_longest_prefix(input) FROM null_sandwich;
+----
+NULL
+1.1.1.0/24
+NULL
+
+query I
+CREATE TEMPORARY TABLE null_in_sandwich (input varchar);
+INSERT INTO null_in_sandwich VALUES 
+    ('1.1.1.1'),
+    (NULL),
+    ('8.8.8.8');
+SELECT riswhois_longest_prefix(input) FROM null_in_sandwich;
+----
+1.1.1.0/24
+NULL
+8.8.8.0/24
+
+#
+# Test some known and some repeated values.
+#
+query I
+CREATE TEMPORARY TABLE prefix_or_ip (input varchar);
+INSERT INTO prefix_or_ip VALUES 
+    ('1.1.1.0/24'),
+    ('2001:7fd::1/48'),
+    ('130.89.1.5'),
+    (NULL),
+    ('8.8.8.8'),
+    ('8.8.8.8'),
+    ('1.1.1.1'),
+    (NULL),
+    (NULL),
+    ('130.89.0.0/16'),
+    ('2001:7fd::1'),
+    ('193.0.14.129'),
+    ('193.0.14.129');
+SELECT riswhois_longest_prefix(input) from prefix_or_ip;
+----
+1.1.1.0/24
+2001:7fd::/48
+130.89.0.0/16
+NULL
+8.8.8.0/24
+8.8.8.0/24
+1.1.1.0/24
+NULL
+NULL
+130.89.0.0/16
+2001:7fd::/48
+193.0.14.0/24
+193.0.14.0/24

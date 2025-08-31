@@ -41,19 +41,24 @@ Test files are in SQLLogicTest format at `test/sql/ip_more_less_specific.test`.
 
 **IMPORTANT**: After every code edit, always run `make debug` to ensure the build succeeds.
 
-Format Rust code:
+Format Rust code (includes benches):
 ```bash
-cargo fmt
+cargo fmt --all
 ```
 
-Run Clippy linter:
+Run Clippy linter (includes benches):
 ```bash
-cargo clippy
+cargo clippy --all-targets
 ```
 
 Run Rust unit tests:
 ```bash
 cargo test
+```
+
+Run tests **and benchmarks** in benches folder:
+```bash
+cargo test --benches
 ```
 
 ## Benchmarks

@@ -1,4 +1,7 @@
-use arrow::{array::{StringArray, UInt32Array}, compute};
+use arrow::{
+    array::{StringArray, UInt32Array},
+    compute,
+};
 use rand::distributions::Distribution;
 use rand::rngs::StdRng;
 use rand::SeedableRng;

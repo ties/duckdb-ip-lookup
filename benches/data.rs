@@ -1,16 +1,16 @@
 use std::{fs::File, sync::Arc};
 
 use arrow::{
+    array::builder::StringBuilder,
     array::{Array, StringArray},
     compute::concat,
     datatypes::{DataType, Schema},
     record_batch::RecordBatch,
-    array::builder::StringBuilder,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use rand::{Rng, SeedableRng};
-use rand::rngs::StdRng;
 use rand::distributions::Distribution;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 
 const CHUNK_SIZE: usize = 2048;
 const TEST_DATA_PATH: &str = "test/data/openintel-radar-2025-08-28.parquet";
@@ -65,42 +65,39 @@ pub fn inject_nulls_with_linear_probing(
 ) -> StringArray {
     let mut builder = StringBuilder::new();
     let array_len = string_array.len();
-    
-    // Create a boolean vector to track positions to make null (true = available for null injection)
-    let mut available_positions = vec![true; array_len];
-    
-    // Mark existing null positions as unavailable
-    for i in 0..array_len {
-        if string_array.is_null(i) {
-            available_positions[i] = false;
-        }
-    }
-    
-    // Track which positions will be made null
-    let mut positions_to_null = vec![false; array_len];
-    let mut nulls_injected = 0;
-    
-    for &target_pos in null_positions {
-        let mut current_pos = target_pos % array_len;
-        
-        // Use linear probing to find an available position
-        while !available_positions[current_pos] {
-            current_pos = (current_pos + 1) % array_len;
-            
-            // Prevent infinite loop if all positions are unavailable
-            if nulls_injected >= array_len {
+
+    // Sort null positions to enable single-pass optimization
+    let mut sorted_null_positions: Vec<usize> =
+        null_positions.iter().map(|&pos| pos % array_len).collect();
+    sorted_null_positions.sort_unstable();
+
+    // Pre-compute existing null positions to avoid repeated is_null() calls
+    let mut positions_to_null: Vec<bool> =
+        (0..array_len).map(|i| string_array.is_null(i)).collect();
+
+    // Invariant: For each sorted null position, we find the first available (non-null) position
+    // at or after that target position using linear probing. By processing positions in sorted
+    // order, we iterate through the target array only once, marking positions as we go.
+    // This reduces complexity from O(n²) (n linear probes over n positions) to O(n log n + n).
+
+    let mut probe_start = 0; // Track where to start probing from for next position
+
+    for &target_pos in &sorted_null_positions {
+        // Start probing from max(target_pos, probe_start) to avoid re-checking positions
+        let mut current_pos = target_pos.max(probe_start);
+
+        // Linear probe to find first available position
+        while current_pos < array_len {
+            if !positions_to_null[current_pos] {
+                // Found available position - mark it for null injection
+                positions_to_null[current_pos] = true;
+                probe_start = current_pos + 1; // Next probe starts after this position
                 break;
             }
-        }
-        
-        // Mark this position for null injection if available
-        if available_positions[current_pos] && nulls_injected < array_len {
-            positions_to_null[current_pos] = true;
-            available_positions[current_pos] = false; // Mark as unavailable for future injections
-            nulls_injected += 1;
+            current_pos += 1;
         }
     }
-    
+
     // Build the new array with nulls in the determined positions
     for i in 0..array_len {
         if positions_to_null[i] {
@@ -109,37 +106,46 @@ pub fn inject_nulls_with_linear_probing(
             builder.append_value(string_array.value(i));
         }
     }
-    
+
     builder.finish()
 }
 
-pub fn create_null_positions_uniform(array_len: usize, null_percentage: f64, seed: u64) -> Vec<usize> {
+pub fn create_null_positions_uniform(
+    array_len: usize,
+    null_percentage: f64,
+    seed: u64,
+) -> Vec<usize> {
     let mut rng = StdRng::seed_from_u64(seed);
     let num_nulls = (array_len as f64 * null_percentage) as usize;
-    
+
     let mut positions = Vec::new();
     for _ in 0..num_nulls {
         let pos = rng.gen_range(0..array_len);
         positions.push(pos);
     }
-    
+
     positions
 }
 
-pub fn create_null_positions_zipf(array_len: usize, null_percentage: f64, exponent: f64, seed: u64) -> Vec<usize> {
+pub fn create_null_positions_zipf(
+    array_len: usize,
+    null_percentage: f64,
+    exponent: f64,
+    seed: u64,
+) -> Vec<usize> {
     use rand_distr::Zipf;
-    
+
     let mut rng = StdRng::seed_from_u64(seed);
     let num_nulls = (array_len as f64 * null_percentage) as usize;
     let zipf = Zipf::new(array_len as u64, exponent).unwrap();
-    
+
     let mut positions = Vec::new();
     for _ in 0..num_nulls {
         // Convert 1-based Zipf to 0-based array index
         let pos = (zipf.sample(&mut rng) as usize) - 1;
         positions.push(pos);
     }
-    
+
     positions
 }
 
@@ -158,22 +164,22 @@ pub fn create_dataset_with_nulls_zipf(
     exponent: f64,
     seed: u64,
 ) -> StringArray {
-    let null_positions = create_null_positions_zipf(string_array.len(), null_percentage, exponent, seed);
+    let null_positions =
+        create_null_positions_zipf(string_array.len(), null_percentage, exponent, seed);
     inject_nulls_with_linear_probing(string_array, &null_positions)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::StringArray;
 
     #[test]
     fn test_inject_nulls_basic() {
         let array = StringArray::from(vec!["a", "b", "c", "d", "e"]);
         let null_positions = vec![1, 3];
-        
+
         let result = inject_nulls_with_linear_probing(&array, &null_positions);
-        
+
         assert_eq!(result.len(), 5);
         assert_eq!(result.value(0), "a");
         assert!(result.is_null(1));
@@ -192,12 +198,12 @@ mod tests {
         builder.append_value("d");
         builder.append_value("e");
         let array = builder.finish();
-        
+
         // Try to inject null at position 1, should probe to next available position
         let null_positions = vec![1];
-        
+
         let result = inject_nulls_with_linear_probing(&array, &null_positions);
-        
+
         assert_eq!(result.len(), 5);
         assert_eq!(result.value(0), "a");
         assert!(result.is_null(1)); // Original null
@@ -211,9 +217,9 @@ mod tests {
         let array = StringArray::from(vec!["a", "b", "c"]);
         // Try to inject at position 5, should wrap to position 2
         let null_positions = vec![5];
-        
+
         let result = inject_nulls_with_linear_probing(&array, &null_positions);
-        
+
         assert_eq!(result.len(), 3);
         assert_eq!(result.value(0), "a");
         assert_eq!(result.value(1), "b");
@@ -225,9 +231,9 @@ mod tests {
         let array = StringArray::from(vec!["a", "b", "c", "d", "e"]);
         // Try to inject at same position twice
         let null_positions = vec![1, 1, 1];
-        
+
         let result = inject_nulls_with_linear_probing(&array, &null_positions);
-        
+
         assert_eq!(result.len(), 5);
         assert_eq!(result.value(0), "a");
         assert!(result.is_null(1)); // First injection at position 1
@@ -240,9 +246,9 @@ mod tests {
     fn test_inject_nulls_empty_positions() {
         let array = StringArray::from(vec!["a", "b", "c"]);
         let null_positions = vec![];
-        
+
         let result = inject_nulls_with_linear_probing(&array, &null_positions);
-        
+
         assert_eq!(result.len(), 3);
         assert_eq!(result.value(0), "a");
         assert_eq!(result.value(1), "b");
@@ -260,11 +266,11 @@ mod tests {
         builder.append_null();
         builder.append_null();
         let array = builder.finish();
-        
+
         let null_positions = vec![0, 1, 2];
-        
+
         let result = inject_nulls_with_linear_probing(&array, &null_positions);
-        
+
         assert_eq!(result.len(), 3);
         // All positions should remain null, no new nulls should be added
         for i in 0..3 {
@@ -276,7 +282,7 @@ mod tests {
     fn test_create_null_positions_uniform() {
         let positions = create_null_positions_uniform(100, 0.2, 42);
         assert_eq!(positions.len(), 20); // 20% of 100
-        
+
         // All positions should be within bounds
         for &pos in &positions {
             assert!(pos < 100);
@@ -287,7 +293,7 @@ mod tests {
     fn test_create_null_positions_zipf() {
         let positions = create_null_positions_zipf(100, 0.1, 1.5, 42);
         assert_eq!(positions.len(), 10); // 10% of 100
-        
+
         // All positions should be within bounds
         for &pos in &positions {
             assert!(pos < 100);

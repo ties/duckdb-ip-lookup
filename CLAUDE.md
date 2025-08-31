@@ -58,17 +58,16 @@ cargo test
 
 ## Benchmarks
 
-Run performance benchmarks (short version for verification):
-```bash
-cargo bench -- --quick
-```
-
 Run full performance benchmarks:
 ```bash
 cargo bench
 ```
 
-**IMPORTANT**: When modifying benchmark code in `benches/`, always run `cargo bench -- --quick` to verify the benchmarks still work correctly.
+Running benchmarks will take a lot of time. Only run the benchmarks when
+modifying code in benches/ or when verifying a performance improvement. You
+should expect the full suite of benchmarks to take 5-10 minutes, so use it
+sparingly.
+
 
 ## Extension Loading
 

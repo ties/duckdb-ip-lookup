@@ -13,10 +13,8 @@ use duckdb::{
     Connection, Result,
 };
 use duckdb_loadable_macros::duckdb_entrypoint_c_api;
-use std::{collections::linked_list::Iter, iter::repeat, sync::Arc};
 use std::{env, error::Error};
-use itertools::EitherOrBoth::{Both, Left, Right};
-use itertools::Itertools;
+use std::{iter::repeat_n, sync::Arc};
 
 #[path = "ris_whois.rs"]
 mod ris_whois;
@@ -62,10 +60,7 @@ impl VArrowScalar for FirstLessSpecific {
         let offset = ip_array.slice(1, len - 1);
 
         // The result of [`not_distinct`] is never NULL.
-        let next_identical = cmp::not_distinct(
-            &orig,
-            &offset,
-        )?;
+        let next_identical = cmp::not_distinct(&orig, &offset)?;
         debug_assert!(next_identical.len() == len - 1);
 
         let mut repetitions = 0;
@@ -87,7 +82,7 @@ impl VArrowScalar for FirstLessSpecific {
                                             for _ in 0..repetitions + 1 {
                                                 builder.append_value(val);
                                             }
-                                        },
+                                        }
                                         None => builder.append_nulls(repetitions + 1),
                                     }
                                 }
@@ -108,7 +103,7 @@ impl VArrowScalar for FirstLessSpecific {
                             };
                         }
                     }
-                },
+                }
                 (_, None) => unreachable!("not_distinct is never none."),
             }
         }
@@ -118,13 +113,12 @@ impl VArrowScalar for FirstLessSpecific {
             false => {
                 let res = info.trie.lookup(ip_array.value(len - 1));
                 match res {
-                    Some((_, val)) => builder.extend(repeat(Some(val)).take(repetitions + 1)),
+                    Some((_, val)) => builder.extend(repeat_n(Some(val), repetitions + 1)),
                     None => builder.append_nulls(repetitions + 1),
                 }
-            },
+            }
             true => builder.append_nulls(repetitions + 1),
         };
-
 
         Ok(Arc::new(builder.finish()))
     }

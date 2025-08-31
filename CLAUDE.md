@@ -41,14 +41,14 @@ Test files are in SQLLogicTest format at `test/sql/ip_more_less_specific.test`.
 
 **IMPORTANT**: After every code edit, always run `make debug` to ensure the build succeeds.
 
-Format Rust code:
+Format Rust code (includes benches):
 ```bash
-cargo fmt
+cargo fmt --all
 ```
 
-Run Clippy linter:
+Run Clippy linter (includes benches):
 ```bash
-cargo clippy
+cargo clippy --all-targets
 ```
 
 Run Rust unit tests:
@@ -56,19 +56,23 @@ Run Rust unit tests:
 cargo test
 ```
 
-## Benchmarks
-
-Run performance benchmarks (short version for verification):
+Run tests **and benchmarks** in benches folder:
 ```bash
-cargo bench -- --quick
+cargo test --benches
 ```
+
+## Benchmarks
 
 Run full performance benchmarks:
 ```bash
 cargo bench
 ```
 
-**IMPORTANT**: When modifying benchmark code in `benches/`, always run `cargo bench -- --quick` to verify the benchmarks still work correctly.
+Running benchmarks will take a lot of time. Only run the benchmarks when
+modifying code in benches/ or when verifying a performance improvement. You
+should expect the full suite of benchmarks to take 5-10 minutes, so use it
+sparingly.
+
 
 ## Extension Loading
 

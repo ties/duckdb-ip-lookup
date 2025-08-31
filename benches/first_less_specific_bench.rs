@@ -54,7 +54,7 @@ fn benchmark_zipf_distributed(c: &mut Criterion) {
     let zipf_batches = create_chunks(&RecordBatch::try_new(schema.clone(), vec![zipf_array.clone()]).unwrap(), CHUNK_SIZE);
     benchmark_order_variant(&mut group, &state, &zipf_batches, "original");
 
-    let sorted_zipf_batches = create_sorted_zipf_batches(&schema, &zipf_array);
+    let sorted_zipf_batches = create_sorted_batches(&schema, &zipf_array);
     benchmark_order_variant(&mut group, &state, &sorted_zipf_batches, "alphabetical_order_zipf_data");
 
     group.finish();
@@ -79,6 +79,7 @@ fn benchmark_exponential_distributed(c: &mut Criterion) {
     group.finish();
 }
 
+
 fn benchmark_order_variant(
     group: &mut criterion::BenchmarkGroup<criterion::measurement::WallTime>,
     state: &FirstLessSpecificState,
@@ -93,6 +94,7 @@ fn benchmark_order_variant(
         })
     });
 }
+
 
 fn create_random_order_batches(
     schema: &Arc<arrow::datatypes::Schema>,
@@ -110,6 +112,7 @@ fn create_random_order_batches(
     create_chunks(&random_batch, CHUNK_SIZE)
 }
 
+
 fn create_sorted_batches(
     schema: &Arc<arrow::datatypes::Schema>,
     string_array: &StringArray,
@@ -121,21 +124,11 @@ fn create_sorted_batches(
     create_chunks(&sorted_batch, CHUNK_SIZE)
 }
 
-fn create_sorted_zipf_batches(
-    schema: &Arc<arrow::datatypes::Schema>,
-    zipf_array: &Arc<StringArray>,
-) -> Vec<RecordBatch> {
-    let sort_indices = sort_to_indices(zipf_array.as_ref(), None, None).unwrap();
-    let sorted_zipf_array = arrow::compute::take(zipf_array.as_ref(), &sort_indices, None).unwrap();
-    let sorted_zipf_batch = RecordBatch::try_new(schema.clone(), vec![sorted_zipf_array]).unwrap();
-
-    create_chunks(&sorted_zipf_batch, CHUNK_SIZE)
-}
 
 criterion_group!(
     benches,
     benchmark_first_less_specific,
     benchmark_zipf_distributed,
-    benchmark_exponential_distributed
+    benchmark_exponential_distributed,
 );
 criterion_main!(benches);

@@ -22,7 +22,7 @@ impl<T> LookupTrie<T> {
     pub(crate) fn lookup(&self, ip_or_pfx: &str) -> Option<(IpNet, &T)> {
         // Parse the input as either an IP network (with CIDR) or IP address
         let ipnet = match ip_or_pfx {
-            s if s.contains('/') => s.parse::<IpNet>().ok(),
+            s if s[ip_or_pfx.len() - 4..].contains('/') => s.parse::<IpNet>().ok(),
             s => s.parse::<IpAddr>().ok().map(IpNet::from),
         };
 

@@ -50,5 +50,5 @@ arrow-ord = "56.1.0"
 arrow = "55.1.0"
 parquet = "55.1.0"
 criterion = { version = "0.5", features = ["html_reports"] }
-rand = { version = "0.8", features = ["std_rng"] }
+rand = { version = "0.9", features = ["std_rng"] }
 rand_distr = "0.4"
